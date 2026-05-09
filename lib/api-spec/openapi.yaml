@@ -3,13 +3,19 @@ info:
   # Do not change the title, if the title changes, the import paths will be broken
   title: Api
   version: 0.1.0
-  description: API specification
+  description: 노들섬 뉴스 모니터 API specification
 servers:
   - url: /api
     description: Base API path
 tags:
   - name: health
     description: Health operations
+  - name: articles
+    description: Article operations
+  - name: crawl
+    description: Crawl job operations
+  - name: stats
+    description: Statistics operations
 paths:
   /healthz:
     get:
@@ -24,6 +30,240 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/HealthStatus"
+
+  /articles:
+    get:
+      operationId: listArticles
+      tags: [articles]
+      summary: List articles with filters
+      parameters:
+        - name: year
+          in: query
+          schema:
+            type: ["integer", "null"]
+        - name: month
+          in: query
+          schema:
+            type: ["integer", "null"]
+        - name: keyword
+          in: query
+          schema:
+            type: ["string", "null"]
+        - name: isNegative
+          in: query
+          schema:
+            type: ["boolean", "null"]
+        - name: isSelfPR
+          in: query
+          schema:
+            type: ["boolean", "null"]
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 1
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 20
+      responses:
+        "200":
+          description: Paginated articles
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ArticleListResponse"
+    post:
+      operationId: createArticle
+      tags: [articles]
+      summary: Manually create an article
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ArticleInput"
+      responses:
+        "201":
+          description: Created article
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Article"
+
+  /articles/{id}:
+    patch:
+      operationId: updateArticle
+      tags: [articles]
+      summary: Update article flags
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ArticleUpdate"
+      responses:
+        "200":
+          description: Updated article
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Article"
+        "404":
+          description: Not found
+    delete:
+      operationId: deleteArticle
+      tags: [articles]
+      summary: Delete an article
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "204":
+          description: Deleted
+        "404":
+          description: Not found
+
+  /articles/{id}/analyze:
+    post:
+      operationId: analyzeArticle
+      tags: [articles]
+      summary: AI sentiment analysis
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Analyzed article
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Article"
+        "404":
+          description: Not found
+
+  /crawl/start:
+    post:
+      operationId: startCrawl
+      tags: [crawl]
+      summary: Start a crawl job
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CrawlJobInput"
+      responses:
+        "200":
+          description: Crawl started
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CrawlStartResponse"
+
+  /crawl/status/{jobId}:
+    get:
+      operationId: getCrawlStatus
+      tags: [crawl]
+      summary: Get crawl job status
+      parameters:
+        - name: jobId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Crawl job status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CrawlJob"
+        "404":
+          description: Not found
+
+  /stats/monthly:
+    get:
+      operationId: getMonthlyStats
+      tags: [stats]
+      summary: Get monthly statistics
+      parameters:
+        - name: year
+          in: query
+          schema:
+            type: ["integer", "null"]
+        - name: startDate
+          in: query
+          schema:
+            type: ["string", "null"]
+        - name: endDate
+          in: query
+          schema:
+            type: ["string", "null"]
+      responses:
+        "200":
+          description: Monthly stats array
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/MonthlyStat"
+
+  /stats/years:
+    get:
+      operationId: getStatYears
+      tags: [stats]
+      summary: Get available years
+      responses:
+        "200":
+          description: Years list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/YearsResponse"
+
+  /stats/summary:
+    get:
+      operationId: getStatsSummary
+      tags: [stats]
+      summary: Get dashboard summary counts
+      responses:
+        "200":
+          description: Summary stats
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StatsSummary"
+
+  /stats/recent:
+    get:
+      operationId: getRecentArticles
+      tags: [stats]
+      summary: Get recent 10 articles for dashboard
+      responses:
+        "200":
+          description: Recent articles
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Article"
+
 components:
   schemas:
     HealthStatus:
@@ -34,3 +274,187 @@ components:
       required:
         - status
 
+    Article:
+      type: object
+      required:
+        - id
+        - title
+        - url
+        - publishedAt
+        - mediaName
+        - isNegative
+        - isSelfPR
+        - source
+        - content
+        - createdAt
+      properties:
+        id:
+          type: integer
+        title:
+          type: string
+        content:
+          type: string
+        url:
+          type: string
+        publishedAt:
+          type: string
+        mediaName:
+          type: string
+        isNegative:
+          type: boolean
+        isSelfPR:
+          type: boolean
+        source:
+          type: string
+        createdAt:
+          type: string
+
+    ArticleInput:
+      type: object
+      required:
+        - title
+        - url
+        - publishedAt
+        - mediaName
+      properties:
+        title:
+          type: string
+        content:
+          type: string
+        url:
+          type: string
+        publishedAt:
+          type: string
+        mediaName:
+          type: string
+        isNegative:
+          type: boolean
+        isSelfPR:
+          type: boolean
+        source:
+          type: string
+
+    ArticleUpdate:
+      type: object
+      properties:
+        isNegative:
+          type: ["boolean", "null"]
+        isSelfPR:
+          type: ["boolean", "null"]
+
+    ArticleListResponse:
+      type: object
+      required:
+        - data
+        - total
+        - page
+        - totalPages
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/Article"
+        total:
+          type: integer
+        page:
+          type: integer
+        totalPages:
+          type: integer
+
+    CrawlJobInput:
+      type: object
+      required:
+        - startDate
+        - endDate
+      properties:
+        startDate:
+          type: string
+        endDate:
+          type: string
+
+    CrawlStartResponse:
+      type: object
+      required:
+        - jobId
+      properties:
+        jobId:
+          type: string
+
+    CrawlJob:
+      type: object
+      required:
+        - id
+        - status
+        - collected
+        - duplicates
+        - total
+        - progress
+        - currentSource
+        - error
+        - createdAt
+      properties:
+        id:
+          type: string
+        status:
+          type: string
+        collected:
+          type: integer
+        duplicates:
+          type: integer
+        total:
+          type: integer
+        progress:
+          type: integer
+        currentSource:
+          type: string
+        error:
+          type: string
+        createdAt:
+          type: string
+
+    MonthlyStat:
+      type: object
+      required:
+        - month
+        - total
+        - negative
+        - statistical
+        - selfPR
+      properties:
+        month:
+          type: integer
+        total:
+          type: integer
+        negative:
+          type: integer
+        statistical:
+          type: integer
+        selfPR:
+          type: integer
+
+    YearsResponse:
+      type: object
+      required:
+        - years
+      properties:
+        years:
+          type: array
+          items:
+            type: integer
+
+    StatsSummary:
+      type: object
+      required:
+        - totalArticles
+        - statisticalCount
+        - selfPRCount
+        - negativeCount
+      properties:
+        totalArticles:
+          type: integer
+        statisticalCount:
+          type: integer
+        selfPRCount:
+          type: integer
+        negativeCount:
+          type: integer

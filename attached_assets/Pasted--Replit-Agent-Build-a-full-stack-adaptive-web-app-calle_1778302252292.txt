@@ -1,0 +1,677 @@
+아래 프롬프트를 Replit Agent에 그대로 붙여넣으세요.
+
+Build a full-stack adaptive web app called "노들섬 뉴스 모니터" from scratch. This is a benchmarking tool so it must be robust, production-ready, and handle all edge cases.
+TECH STACK
+
+Frontend: Next.js 14 App Router + TypeScript + Tailwind CSS + shadcn/ui + React Query
+Backend: Node.js + Express + TypeScript + Prisma + PostgreSQL
+Package manager: npm
+Run both with concurrently via "npm run dev" from root
+
+
+SECTION 1 — DATABASE SCHEMA (Prisma)
+prismamodel Article {
+  id          Int      @id @default(autoincrement())
+  title       String
+  content     String   @default("")
+  url         String   @unique
+  publishedAt DateTime
+  mediaName   String
+  isNegative  Boolean  @default(false)
+  isSelfPR    Boolean  @default(false)
+  source      String   @default("")
+  createdAt   DateTime @default(now())
+}
+
+model CrawlJob {
+  id          String   @id
+  status      String   @default("running")
+  collected   Int      @default(0)
+  duplicates  Int      @default(0)
+  total       Int      @default(0)
+  progress    Int      @default(0)
+  currentSource String @default("")
+  error       String   @default("")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+SECTION 2 — RELEVANCE FILTER (implement exactly as written)
+typescriptfunction isRelevant(title: string, content: string): boolean {
+  const text = (title + " " + content);
+
+  // STEP 1: Hard include — if any of these exist, always return true immediately
+  if (
+    text.includes("노들섬") ||
+    text.includes("노들 예술섬") ||
+    text.includes("예술섬 노들")
+  ) {
+    return true;
+  }
+
+  // STEP 2: Conditional include — "노들" present but no exclusion patterns
+  if (text.includes("노들")) {
+    const exclusionPatterns = [
+      "노들역", "노들로1", "노들로2", "노들로3", "노들로4", "노들로5",
+      "노들로6", "노들로7", "노들로8", "노들로9", "노들로0",
+      "노들나루공원", "노들나루역"
+    ];
+    const hasExclusion = exclusionPatterns.some(e => text.includes(e));
+    return !hasExclusion;
+  }
+
+  return false;
+}
+CRITICAL: Step 1 runs first and always wins. An article containing "노들섬" is ALWAYS included even if it also contains "노들역", "노들나루역", or any other exclusion pattern. Exclusion patterns only apply to articles that did NOT pass Step 1.
+
+SECTION 3 — MEDIA NAME RESOLUTION
+Never store "news.google.com" or any aggregator domain as mediaName. Always resolve to the actual publisher name.
+Build this function:
+typescriptfunction resolveMediaName(url: string, fallbackName?: string): string {
+  try {
+    const domain = new URL(url).hostname.replace(/^www\./, "");
+    const map: Record<string, string> = {
+      "yna.co.kr": "연합뉴스",
+      "newsis.com": "뉴시스",
+      "news1.kr": "뉴스1",
+      "chosun.com": "조선일보",
+      "joongang.co.kr": "중앙일보",
+      "joins.com": "중앙일보",
+      "donga.com": "동아일보",
+      "hani.co.kr": "한겨레",
+      "khan.co.kr": "경향신문",
+      "kmib.co.kr": "국민일보",
+      "segye.com": "세계일보",
+      "seoul.co.kr": "서울신문",
+      "munhwa.com": "문화일보",
+      "hankookilbo.com": "한국일보",
+      "hankyung.com": "한국경제",
+      "mk.co.kr": "매일경제",
+      "mt.co.kr": "머니투데이",
+      "fnnews.com": "파이낸셜뉴스",
+      "heraldcorp.com": "헤럴드경제",
+      "sedaily.com": "서울경제",
+      "asiae.co.kr": "아시아경제",
+      "edaily.co.kr": "이데일리",
+      "inews24.com": "아이뉴스24",
+      "etnews.com": "전자신문",
+      "dt.co.kr": "디지털타임스",
+      "bloter.net": "블로터",
+      "zdnet.co.kr": "ZDNet Korea",
+      "ddaily.co.kr": "디지털데일리",
+      "boannews.com": "보안뉴스",
+      "ytn.co.kr": "YTN",
+      "yonhapnewstv.co.kr": "연합뉴스TV",
+      "mbc.co.kr": "MBC",
+      "kbs.co.kr": "KBS",
+      "sbs.co.kr": "SBS",
+      "jtbc.co.kr": "JTBC",
+      "jtbc.joins.com": "JTBC",
+      "tvchosun.com": "TV조선",
+      "mbn.co.kr": "MBN",
+      "ichannela.com": "채널A",
+      "nocutnews.co.kr": "노컷뉴스",
+      "ohmynews.com": "오마이뉴스",
+      "pressian.com": "프레시안",
+      "mediatoday.co.kr": "미디어오늘",
+      "sisain.co.kr": "시사IN",
+      "sisajournal.com": "시사저널",
+      "imaeil.com": "매일신문",
+      "yeongnam.com": "영남일보",
+      "busan.com": "부산일보",
+      "kookje.co.kr": "국제신문",
+      "kgib.co.kr": "경기일보",
+      "kyeonggi.com": "경기신문",
+      "joongboo.com": "중부일보",
+      "joongboonews.com": "중부일보",
+      "incheonilbo.com": "인천일보",
+      "kihoilbo.co.kr": "기호일보",
+      "gnnews.net": "경남신문",
+      "knnews.co.kr": "경남도민일보",
+      "ksilbo.co.kr": "경상일보",
+      "ujeil.com": "울산신문",
+      "kado.net": "강원도민일보",
+      "kwnews.co.kr": "강원일보",
+      "daejonilbo.com": "대전일보",
+      "cctoday.co.kr": "충청투데이",
+      "ccdn.co.kr": "충청일보",
+      "cctimes.kr": "충청타임즈",
+      "idaegu.co.kr": "대구신문",
+      "idaegu.com": "대구일보",
+      "kbmaeil.com": "경북매일신문",
+      "kyongbuk.co.kr": "경북일보",
+      "jeonbuk.com": "전북일보",
+      "sjbnews.com": "새전북신문",
+      "gwangju.com": "광주일보",
+      "honam.co.kr": "전남일보",
+      "namdonews.com": "남도일보",
+      "jemin.com": "제민일보",
+      "jejunews.com": "제주일보",
+      "jejusori.net": "제주의소리",
+      "ihalla.com": "한라일보",
+      "newstomato.com": "뉴스토마토",
+      "dailian.co.kr": "데일리안",
+      "newspim.com": "뉴스핌",
+      "kukinews.com": "쿠키뉴스",
+      "breaknews.com": "브레이크뉴스",
+      "skyedaily.com": "스카이데일리",
+      "ilyo.co.kr": "일요신문",
+      "sisaon.co.kr": "시사오늘",
+      "mindlenews.com": "민들레",
+      "vop.co.kr": "민중의소리",
+      "newscj.com": "기독신문",
+      "christiantoday.co.kr": "크리스천투데이",
+      "newsnjoy.or.kr": "뉴스앤조이",
+      "lawtimes.co.kr": "법률신문",
+      "medipana.com": "메디파나뉴스",
+      "monews.co.kr": "메디컬투데이",
+      "dailymedi.com": "데일리메디",
+      "doctorsnews.co.kr": "의학신문",
+      "yakup.com": "약업신문",
+      "nongmin.com": "농민신문",
+      "agrinet.co.kr": "한국농어민신문",
+      "sportschosun.com": "스포츠조선",
+      "sportsworldi.com": "스포츠서울",
+      "newsen.com": "뉴스엔",
+      "mydaily.co.kr": "마이데일리",
+      "starnews.co.kr": "스타뉴스",
+      "xportsnews.com": "엑스포츠뉴스",
+      "tenasia.hankyung.com": "텐아시아",
+      "nspna.com": "NSP통신",
+      "newswire.co.kr": "뉴스와이어",
+      "mediapen.com": "미디어펜",
+      "businesspost.co.kr": "비즈니스포스트",
+      "businesswatch.co.kr": "비즈니스워치",
+      "hansbiz.co.kr": "한스경제",
+      "fetv.co.kr": "FETV",
+      "meconomynews.com": "매경이코노미",
+      "econovill.com": "이코노빌",
+      "etoday.co.kr": "이투데이",
+      "moneys.co.kr": "머니S",
+      "news.naver.com": "네이버뉴스",
+      "news.daum.net": "다음뉴스"
+    };
+    const resolved = map[domain];
+    if (resolved) return resolved;
+    if (fallbackName && fallbackName !== "NEWS.GOOGLE" && !fallbackName.includes("google")) {
+      return fallbackName;
+    }
+    return domain;
+  } catch {
+    return fallbackName || "알수없음";
+  }
+}
+When crawling Google News RSS: always follow the redirect URL in the RSS item to get the real article URL, then apply resolveMediaName on the final URL. Never use the google.com redirect URL as the stored URL.
+
+SECTION 4 — DEDUPLICATION
+typescriptfunction isDuplicate(url: string, title: string, publishedAt: Date, existingArticles: Set<string>): boolean {
+  // Primary check: exact URL match
+  const normalizedUrl = url.toLowerCase().trim().replace(/\/$/, "");
+  if (existingArticles.has(normalizedUrl)) return true;
+
+  // Secondary check: title + date fingerprint
+  const dateStr = publishedAt.toISOString().split("T")[0];
+  const fingerprint = `${title.trim().replace(/\s+/g, "")}__${dateStr}`;
+  if (existingArticles.has(fingerprint)) return true;
+
+  return false;
+}
+Load all existing URLs and fingerprints from DB into memory at the start of each crawl job. Update the in-memory set as new articles are saved so duplicates within the same crawl batch are also caught.
+
+SECTION 5 — CRAWLING SOURCES (implement all)
+Use these headers for all requests:
+typescriptconst headers = {
+  "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+  "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+  "Accept-Language": "ko-KR,ko;q=0.9,en;q=0.8",
+  "Accept-Encoding": "gzip, deflate, br",
+  "Connection": "keep-alive"
+};
+Add random delay between requests: await sleep(Math.random() * 800 + 400) (400-1200ms)
+SOURCE 1 — Naver News API
+Client ID: Bdnb5ZUwP3Ye3jb0az5Q
+Client Secret: bzIA0_exdV
+Endpoint: GET https://openapi.naver.com/v1/search/news.json
+Headers: X-Naver-Client-Id, X-Naver-Client-Secret
+Params: query, display=100, start=1, sort=date
+
+Search both "노들섬" and "노들" separately
+Paginate: start=1, 101, 201, ... 901 (max 1000 results per query)
+Total: up to 2000 raw results across both keywords
+Filter by date range after fetching (compare pubDate to startDate/endDate)
+Parse pubDate format: "Mon, 01 Jan 2026 00:00:00 +0900"
+Strip HTML tags from title and description fields
+Use originallink field for URL (not link field which is naver aggregator)
+If originallink is empty or naver domain, use link field but mark source as "naver_aggregator"
+Extract mediaName from the originallink domain using resolveMediaName
+
+SOURCE 2 — Google News RSS
+URL: https://news.google.com/rss/search?q={encoded_keyword}&hl=ko&gl=KR&ceid=KR:ko
+
+Fetch for both "노들섬" and "노들"
+Parse RSS XML using rss-parser
+For each item: the item.link is a google redirect URL
+Fetch that URL with axios (follow redirects, maxRedirects: 10) to get the final real URL
+Use the final URL for storage and for resolveMediaName
+If redirect fails after 3 retries: skip the article (do NOT store with google.com URL)
+Parse pubDate from item.pubDate
+Filter by date range
+
+SOURCE 3 — Daum News Search
+URL: https://search.daum.net/search?w=news&q={encoded_keyword}&sort=recency&DA=PGD&period=u&sd={startDate}000000&ed={endDate}235959
+
+Format dates as YYYYMMDD (no hyphens) for the URL
+Paginate: add &p=1, &p=2, ... until no more results or p=20 max
+Parse HTML with cheerio
+Selectors to try: ".c-item-search", ".news-item", "li[data-docid]"
+Extract: title from .item-title or a tag, URL from href, mediaName from .item-source, date from .item-date or datetime attribute
+If date parsing fails, skip the article
+
+SOURCE 4 — BigKinds
+URL: https://www.bigkinds.or.kr/api/news/search.do
+Method: POST
+Content-Type: application/json
+Body: {
+  "query": "{keyword}",
+  "startDate": "{YYYY-MM-DD}",
+  "endDate": "{YYYY-MM-DD}",
+  "page": 1,
+  "pageSize": 100,
+  "sortType": "date",
+  "providerCodes": [],
+  "categoryList": []
+}
+
+Paginate until response.data.totalCount is reached
+BigKinds returns mediaName directly — use it as-is
+If BigKinds requires login/token, catch the auth error gracefully and skip this source without crashing
+
+SOURCE 5 — RSS Feeds (direct from publishers)
+Fetch these RSS feed URLs and apply isRelevant filter to each item:
+typescriptconst RSS_FEEDS = [
+  // Major wire services
+  { url: "https://www.yna.co.kr/rss/news.xml", name: "연합뉴스" },
+  { url: "https://feeds.bbci.co.uk/korean/rss.xml", name: "BBC코리아" },
+
+  // National daily newspapers
+  { url: "https://www.chosun.com/arc/outboundfeeds/rss/", name: "조선일보" },
+  { url: "https://rss.joins.com/joins_news_list.xml", name: "중앙일보" },
+  { url: "https://rss.donga.com/total.xml", name: "동아일보" },
+  { url: "https://www.hani.co.kr/rss/", name: "한겨레" },
+  { url: "https://www.khan.co.kr/rss/rssdata/total_news.xml", name: "경향신문" },
+  { url: "https://www.kmib.co.kr/rss/kmibRss.xml", name: "국민일보" },
+  { url: "https://www.segye.com/Articles/RssFeeds/", name: "세계일보" },
+  { url: "https://www.seoul.co.kr/rss/news-all.xml", name: "서울신문" },
+  { url: "https://www.munhwa.com/rss/all.xml", name: "문화일보" },
+  { url: "https://www.hankookilbo.com/rss/hankookilbo.xml", name: "한국일보" },
+
+  // Economy newspapers
+  { url: "https://www.hankyung.com/feed/all-news", name: "한국경제" },
+  { url: "https://www.mk.co.kr/rss/30000001/", name: "매일경제" },
+  { url: "https://www.mt.co.kr/rss/news/news_rss.xml", name: "머니투데이" },
+  { url: "https://www.fnnews.com/rss/fn_realnews.xml", name: "파이낸셜뉴스" },
+  { url: "https://biz.heraldcorp.com/rss/index.xml", name: "헤럴드경제" },
+  { url: "https://www.sedaily.com/rss", name: "서울경제" },
+  { url: "https://www.asiae.co.kr/rss/all.htm", name: "아시아경제" },
+  { url: "https://www.edaily.co.kr/rss/news.xml", name: "이데일리" },
+  { url: "https://www.newstomato.com/rss/ReadNews.aspx", name: "뉴스토마토" },
+  { url: "https://www.etoday.co.kr/news/rss", name: "이투데이" },
+  { url: "https://moneys.mt.co.kr/rss/news/news_rss.xml", name: "머니S" },
+
+  // Broadcast
+  { url: "https://www.ytn.co.kr/ln/rss.php", name: "YTN" },
+  { url: "http://rss.mbc.co.kr/", name: "MBC" },
+  { url: "https://news.kbs.co.kr/rss/rss.xml", name: "KBS" },
+  { url: "https://news.sbs.co.kr/news/SectionRssFeed.do?sectionId=01", name: "SBS" },
+  { url: "https://fs.jtbc.co.kr/RSS/newsflash.xml", name: "JTBC" },
+  { url: "https://www.mbn.co.kr/rss/", name: "MBN" },
+  { url: "https://www.tvchosun.com/site/data/rss/rss.xml", name: "TV조선" },
+
+  // Internet news
+  { url: "https://www.nocutnews.co.kr/rss/allnews.xml", name: "노컷뉴스" },
+  { url: "https://www.ohmynews.com/ohmyrss.aspx", name: "오마이뉴스" },
+  { url: "https://www.pressian.com/api/rss", name: "프레시안" },
+  { url: "https://www.mediatoday.co.kr/rss/allArticle.xml", name: "미디어오늘" },
+  { url: "https://www.vop.co.kr/rss.html", name: "민중의소리" },
+  { url: "https://newstapa.org/feed", name: "뉴스타파" },
+  { url: "https://www.dailian.co.kr/rss/rss.php", name: "데일리안" },
+  { url: "https://www.newspim.com/rss", name: "뉴스핌" },
+  { url: "https://www.kukinews.com/rss/index.xml", name: "쿠키뉴스" },
+  { url: "https://www.inews24.com/rss/sports_all.xml", name: "아이뉴스24" },
+
+  // Tech
+  { url: "https://www.etnews.com/rss/rss.xml", name: "전자신문" },
+  { url: "https://www.dt.co.kr/rss/dt.xml", name: "디지털타임스" },
+  { url: "https://www.ddaily.co.kr/rss/allArticle.xml", name: "디지털데일리" },
+  { url: "https://www.zdnet.co.kr/rss/news.xml", name: "ZDNet Korea" },
+  { url: "https://www.bloter.net/feed", name: "블로터" },
+  { url: "https://www.boannews.com/media/rss.asp", name: "보안뉴스" },
+
+  // Sports/Entertainment
+  { url: "https://www.sportschosun.com/rss/news.xml", name: "스포츠조선" },
+  { url: "https://www.sportsworldi.com/rss/allArticle.xml", name: "스포츠서울" },
+  { url: "https://www.newsen.com/rss/news.xml", name: "뉴스엔" },
+  { url: "https://www.mydaily.co.kr/rss/todaynews.xml", name: "마이데일리" },
+  { url: "https://www.starnews.co.kr/rss/allArticle.xml", name: "스타뉴스" },
+  { url: "https://www.xportsnews.com/?feed=rss2", name: "엑스포츠뉴스" },
+
+  // Regional - Gyeonggi / Incheon
+  { url: "https://www.kyeonggi.com/rss/allArticle.xml", name: "경기신문" },
+  { url: "https://www.kgib.co.kr/rss/allArticle.xml", name: "경기일보" },
+  { url: "https://www.joongboo.com/rss/S1N1.xml", name: "중부일보" },
+  { url: "https://www.incheonilbo.com/rss/allArticle.xml", name: "인천일보" },
+  { url: "https://www.kihoilbo.co.kr/rss/allArticle.xml", name: "기호일보" },
+
+  // Regional - Busan / Gyeongnam
+  { url: "https://www.busan.com/rss/rss.xml", name: "부산일보" },
+  { url: "https://www.kookje.co.kr/rss/allArticle.xml", name: "국제신문" },
+  { url: "https://www.gnnews.net/rss/allArticle.xml", name: "경남신문" },
+  { url: "https://www.knnews.co.kr/rss/allArticle.xml", name: "경남도민일보" },
+  { url: "https://www.ksilbo.co.kr/rss/allArticle.xml", name: "경상일보" },
+
+  // Regional - Daegu / Gyeongbuk
+  { url: "https://www.imaeil.com/rss/allArticle.xml", name: "매일신문" },
+  { url: "https://www.yeongnam.com/rss/allArticle.xml", name: "영남일보" },
+  { url: "https://www.idaegu.co.kr/rss/allArticle.xml", name: "대구신문" },
+  { url: "https://www.kyongbuk.co.kr/rss/allArticle.xml", name: "경북일보" },
+  { url: "https://www.kbmaeil.com/rss/allArticle.xml", name: "경북매일신문" },
+
+  // Regional - Gangwon
+  { url: "https://www.kwnews.co.kr/rss/allArticle.xml", name: "강원일보" },
+  { url: "https://www.kado.net/rss/allArticle.xml", name: "강원도민일보" },
+
+  // Regional - Chungcheong
+  { url: "https://www.daejonilbo.com/rss/rss.jsp", name: "대전일보" },
+  { url: "https://www.cctoday.co.kr/rss/allArticle.xml", name: "충청투데이" },
+  { url: "https://www.ccdn.co.kr/rss/allArticle.xml", name: "충청일보" },
+
+  // Regional - Jeolla
+  { url: "https://www.jeonbuk.com/rss/allArticle.xml", name: "전북일보" },
+  { url: "https://www.sjbnews.com/rss/allArticle.xml", name: "새전북신문" },
+  { url: "https://www.gwangju.com/rss/allArticle.xml", name: "광주일보" },
+  { url: "https://www.namdonews.com/rss/allArticle.xml", name: "남도일보" },
+  { url: "https://www.honam.co.kr/rss/allArticle.xml", name: "전남일보" },
+
+  // Regional - Jeju
+  { url: "https://www.jejunews.com/rss/allArticle.xml", name: "제주일보" },
+  { url: "https://www.jejusori.net/?skin=rss", name: "제주의소리" },
+  { url: "https://www.ihalla.com/rss/allArticle.xml", name: "한라일보" },
+  { url: "https://www.jemin.com/rss/allArticle.xml", name: "제민일보" },
+
+  // Business / Finance
+  { url: "https://www.businesspost.co.kr/rss/allArticle.xml", name: "비즈니스포스트" },
+  { url: "https://www.businesswatch.co.kr/rss/allArticle.xml", name: "비즈니스워치" },
+  { url: "https://www.newspim.com/rss/news/finance", name: "뉴스핌금융" },
+  { url: "https://www.mediapen.com/rss/allArticle.xml", name: "미디어펜" },
+  { url: "https://www.sisajournal.com/rss/allArticle.xml", name: "시사저널" },
+  { url: "https://www.sisain.co.kr/?feed=rss2", name: "시사IN" },
+  { url: "https://weekly.donga.com/rss", name: "주간동아" }
+];
+For each RSS feed:
+
+Wrap in try/catch — if one feed fails (timeout, 404, etc.), log the error and continue to the next
+Set timeout: 10 seconds per feed
+Parse pubDate and filter by date range
+Apply isRelevant filter
+Use the feed's name field as mediaName fallback; but also try resolveMediaName on the article URL
+
+SOURCE 6 — Individual publisher search pages
+For these publishers, directly query their search pages using axios + cheerio. Each is wrapped in try/catch independently:
+typescriptconst SEARCH_SOURCES = [
+  {
+    name: "오마이뉴스",
+    buildUrl: (kw: string) => `https://www.ohmynews.com/NWS_Web/Search/SearchNews.aspx?search_term=${encodeURIComponent(kw)}&page=1`,
+    titleSelector: ".tit_news a",
+    urlSelector: ".tit_news a",
+    urlAttr: "href",
+    dateSelector: ".info_news span",
+    mediaSelector: null
+  },
+  {
+    name: "프레시안",
+    buildUrl: (kw: string) => `https://www.pressian.com/pages/search?q=${encodeURIComponent(kw)}`,
+    titleSelector: ".list_news li .tit a",
+    urlSelector: ".list_news li .tit a",
+    urlAttr: "href",
+    dateSelector: ".list_news li .date",
+    mediaSelector: null
+  },
+  {
+    name: "미디어오늘",
+    buildUrl: (kw: string) => `https://www.mediatoday.co.kr/?s=${encodeURIComponent(kw)}`,
+    titleSelector: ".item-box h4 a",
+    urlSelector: ".item-box h4 a",
+    urlAttr: "href",
+    dateSelector: ".item-box .date",
+    mediaSelector: null
+  }
+];
+SOURCE 7 — Naver News extended search (supplementary)
+URL: https://search.naver.com/search.naver?where=news&query={encoded_keyword}&sort=1&ds={startDate}&de={endDate}&nso=so:dd,p:from{startDate}to{endDate}
+Date format: YYYY.MM.DD
+
+Paginate: &start=1, 11, 21, ... up to 100
+Parse HTML with cheerio
+Selector: ".news_area", title from ".news_tit", URL from ".news_tit" href, date from ".info_group span.info:last-child", mediaName from ".info_group a.info:first-child" or ".press"
+Wrap in try/catch — naver may block scraping; if blocked return empty array
+
+
+SECTION 6 — CRAWL JOB ORCHESTRATION
+typescriptasync function runCrawlJob(jobId: string, startDate: string, endDate: string) {
+  // 1. Load existing URLs and fingerprints from DB into memory
+  const existingSet = new Set<string>();
+  const existingArticles = await prisma.article.findMany({ select: { url: true, title: true, publishedAt: true } });
+  for (const a of existingArticles) {
+    existingSet.add(a.url.toLowerCase().trim().replace(/\/$/, ""));
+    const fp = `${a.title.trim().replace(/\s+/g, "")}__${a.publishedAt.toISOString().split("T")[0]}`;
+    existingSet.add(fp);
+  }
+
+  let totalCollected = 0;
+  let totalDuplicates = 0;
+  const sources = ["네이버API", "구글RSS", "다음뉴스", "BigKinds", "RSS피드들", "언론사검색", "네이버검색"];
+  
+  for (let i = 0; i < sources.length; i++) {
+    await prisma.crawlJob.update({ where: { id: jobId }, data: { currentSource: sources[i], progress: Math.round((i / sources.length) * 90) } });
+    
+    // run each source, catch errors per source
+    try {
+      const results = await runSource(sources[i], startDate, endDate);
+      for (const article of results) {
+        if (!isRelevant(article.title, article.content)) continue;
+        if (isDuplicate(article.url, article.title, article.publishedAt, existingSet)) {
+          totalDuplicates++;
+          continue;
+        }
+        // Add to set before saving to catch within-batch duplicates
+        existingSet.add(article.url.toLowerCase().trim().replace(/\/$/, ""));
+        const fp = `${article.title.trim().replace(/\s+/g, "")}__${article.publishedAt.toISOString().split("T")[0]}`;
+        existingSet.add(fp);
+        
+        await prisma.article.create({ data: article });
+        totalCollected++;
+        await prisma.crawlJob.update({ where: { id: jobId }, data: { collected: totalCollected, duplicates: totalDuplicates } });
+      }
+    } catch (err) {
+      console.error(`Source ${sources[i]} failed:`, err);
+      // Continue to next source
+    }
+  }
+  
+  await prisma.crawlJob.update({ where: { id: jobId }, data: { status: "done", progress: 100, total: totalCollected + totalDuplicates } });
+}
+
+SECTION 7 — API ENDPOINTS
+POST /api/crawl/start
+Body: { startDate: string, endDate: string }
+Response: { jobId: string }
+- Generate jobId with uuid
+- Create CrawlJob record in DB
+- Start runCrawlJob in background (do NOT await)
+- Return immediately with jobId
+
+GET /api/crawl/status/:jobId
+Response: { status, collected, duplicates, total, progress, currentSource, error }
+
+GET /api/articles
+Query: year?, month?, keyword?, isNegative?, isSelfPR?, page=1, limit=20
+Response: { data: Article[], total: number, page: number, totalPages: number }
+- year/month filter on publishedAt
+- keyword searches title and mediaName (case-insensitive)
+
+POST /api/articles
+Body: { title, content, url, publishedAt, mediaName, isNegative, isSelfPR }
+For manual article entry
+
+PATCH /api/articles/:id
+Body: { isNegative?: boolean, isSelfPR?: boolean }
+
+DELETE /api/articles/:id
+
+GET /api/stats/monthly
+Query: year?, startDate?, endDate?
+Response: array of { month: number, total: number, negative: number, statistical: number, selfPR: number }
+- statistical = total - negative (articles marked negative are excluded from statistical count)
+- If year provided: return all 12 months for that year (0 for months with no data)
+- If startDate/endDate provided: group by month within that range
+
+GET /api/stats/years
+Response: { years: number[] }
+- Distinct years from publishedAt, ordered DESC
+- Always include 2026 even if no data yet
+
+POST /api/articles/:id/analyze
+Calls Anthropic API to analyze sentiment, updates isNegative, returns updated article
+
+SECTION 8 — FRONTEND PAGES
+Layout: Sidebar navigation with links to all 4 pages. Mobile-responsive (hamburger menu on small screens).
+Page 1 — Dashboard (/)
+
+4 summary cards: 전체 기사 / 통계 보도건수 (전체-부정) / 자체보도자료 / 부정기사
+Monthly bar chart using recharts showing current year month-by-month
+Recent 10 articles table with columns: 날짜 / 매체명 / 제목(link) / 부정 badge / 자체보도자료 badge
+
+Page 2 — 데이터 수집 (/crawl)
+
+Date range picker: startDate, endDate (default: 2026-01-01 to today)
+"크롤링 실행" button — calls POST /api/crawl/start, then polls GET /api/crawl/status/:jobId every 2 seconds
+Progress bar (0-100%) with current source label shown below
+Real-time counters: "수집: N건 / 중복 제외: M건"
+On completion: toast notification AND modal popup: "총 N건 수집 완료되었습니다 (중복 제외: M건)"
+Disable the button while crawling is in progress
+
+Page 3 — 기사 목록 (/articles)
+
+Filter bar: year dropdown (auto-populated), month dropdown, keyword text input, isNegative filter toggle, isSelfPR filter toggle
+Table with: 게시일 / 매체명 / 제목(external link) / 부정 toggle switch / 자체보도자료 toggle switch / AI분석 버튼 / 삭제 버튼
+Each toggle calls PATCH immediately on change and updates UI optimistically
+AI분석 button per row: calls POST /api/articles/:id/analyze, shows loading spinner, updates toggle on response
+"전체 AI 분석" button: analyzes all un-analyzed articles in batches of 5 with 1s delay between batches
+"+ 수기 추가" modal form: title, content (textarea), url, publishedAt (date picker), mediaName, isNegative, isSelfPR
+Pagination: show 20 per page, page numbers at bottom
+Show total count above table
+
+Page 4 — 통계 (/stats)
+
+Two modes: "연도별" tab and "기간별" tab
+연도별: year dropdown (auto-populated from /api/stats/years, default current year)
+기간별: startDate + endDate date pickers
+Monthly grouped bar chart (recharts): 4 bars per month — 전체(blue) / 부정(red) / 통계보도건수(green) / 자체보도자료(yellow)
+12-row table: 월 / 전체 / 부정 / 통계보도건수 / 자체보도자료
+"통계보도건수 = 전체 - 부정" label shown clearly
+Total row at bottom of table
+Highlight card showing 자체보도자료 total separately
+
+
+SECTION 9 — AI SENTIMENT ANALYSIS
+typescript// Backend: POST /api/articles/:id/analyze
+async function analyzeArticle(id: number) {
+  const article = await prisma.article.findUnique({ where: { id } });
+  if (!article) throw new Error("Article not found");
+
+  const response = await anthropic.messages.create({
+    model: "claude-sonnet-4-20250514",
+    max_tokens: 100,
+    messages: [{
+      role: "user",
+      content: `다음 기사를 분석하여 노들섬에 대해 부정적인 내용인지 판단하세요.
+부정적인 기사란: 노들섬 개발/운영/정책에 대한 비판, 문제점 지적, 반대 의견, 부정적 사건 보도 등을 포함합니다.
+반드시 JSON만 반환하세요. 다른 텍스트 없이: {"isNegative": true} 또는 {"isNegative": false}
+
+제목: ${article.title}
+내용: ${article.content.slice(0, 500)}`
+    }]
+  });
+
+  const text = response.content[0].type === "text" ? response.content[0].text : "";
+  const cleaned = text.replace(/```json|```/g, "").trim();
+  const parsed = JSON.parse(cleaned);
+
+  return prisma.article.update({
+    where: { id },
+    data: { isNegative: parsed.isNegative }
+  });
+}
+
+SECTION 10 — ERROR HANDLING & RESILIENCE
+Implement these safeguards throughout:
+
+Every external HTTP request: wrap in try/catch, set timeout (axios: timeout: 10000), retry up to 2 times on network error with 1s delay between retries
+RSS feed failures: if a feed returns non-XML or 404 or times out, log [RSS SKIP] feedName: reason and continue
+Date parsing failures: if publishedAt cannot be parsed, skip the article (do not save with wrong date)
+URL validation: before saving, check that url starts with http and is a valid URL. Discard invalid URLs.
+Prisma unique constraint on url: wrap article creation in try/catch for P2002 (unique violation) — treat as duplicate and increment duplicate counter
+BigKinds auth failure: if response status 401/403 or error contains "login", skip gracefully
+Google News redirect failures: if redirect chain exceeds 10 hops or times out, skip that article
+Naver API rate limit: if response status 429, wait 2 seconds and retry once
+Job crash recovery: if the Node process crashes during a crawl, the CrawlJob record stays as "running" — add a startup check that sets any "running" jobs older than 10 minutes to "error" status on server start
+Content encoding: use axios.get(url, { responseType: "arraybuffer" }) and detect encoding from Content-Type header, convert with iconv-lite if needed (many Korean news sites use EUC-KR)
+Cheerio HTML parsing: always check if selector returned any elements before accessing — never assume selectors will work
+
+
+SECTION 11 — ENVIRONMENT & STARTUP
+.env.example:
+DATABASE_URL=postgresql://user:password@localhost:5432/nodeulsem
+NAVER_CLIENT_ID=Bdnb5ZUwP3Ye3jb0az5Q
+NAVER_CLIENT_SECRET=bzIA0_exdV
+ANTHROPIC_API_KEY=your_key_here
+PORT=3001
+package.json root scripts:
+json{
+  "scripts": {
+    "dev": "concurrently \"npm run dev --prefix backend\" \"npm run dev --prefix frontend\"",
+    "build": "npm run build --prefix backend && npm run build --prefix frontend",
+    "start": "concurrently \"npm run start --prefix backend\" \"npm run start --prefix frontend\""
+  }
+}
+Backend startup sequence:
+
+Run prisma db push or prisma migrate deploy
+Run job recovery check (set stale "running" jobs to "error")
+Start Express server on PORT (default 3001)
+
+Frontend next.config.js rewrites:
+javascriptasync rewrites() {
+  return [{ source: "/api/:path*", destination: "http://localhost:3001/api/:path*" }];
+}
+
+SECTION 12 — FINAL CHECKLIST BEFORE DECLARING DONE
+Before finishing, verify each of these:
+
+ POST /api/crawl/start returns jobId immediately without waiting for crawl to finish
+ GET /api/crawl/status/:jobId returns live progress updates
+ Naver API pagination goes up to start=901 (10 pages × 100 per page)
+ Google News RSS follows redirects and stores real URLs (not google.com URLs)
+ isRelevant() Step 1 check runs BEFORE any exclusion logic — "노들섬" always wins
+ Deduplication checks both URL and title+date fingerprint
+ Each RSS feed failure is caught independently and does not stop other feeds
+ All HTTP requests have 10s timeout set
+ Stats endpoint returns statistical = total - negative
+ Toggle switches on article list call PATCH immediately
+ Manual article entry form validates all required fields before submitting
+ Year dropdown in stats page always includes 2026
+ Mobile layout works (sidebar collapses to hamburger)
+ No "news.google.com" ever stored as mediaName
+ Stale crawl job recovery runs on server startup
+
+Build the entire application now. Do not stop until all pages are working and the checklist above is verified.
