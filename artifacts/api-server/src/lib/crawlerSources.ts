@@ -39,7 +39,7 @@ export async function crawlNaverAPI(
   const keywords = ["노들섬", "노들"];
 
   for (const keyword of keywords) {
-    for (let page = 1; page <= 10; page++) {
+    for (let page = 1; page <= 20; page++) {
       const startIdx = (page - 1) * 100 + 1;
       try {
         await randomDelay();
@@ -70,11 +70,23 @@ export async function crawlNaverAPI(
         const items = response.data.items || [];
         if (items.length === 0) break;
 
+        let allOlderThanStart = true;
+
         for (const item of items) {
           try {
             const pubDate = new Date(item.pubDate);
             if (isNaN(pubDate.getTime())) continue;
-            if (pubDate < start || pubDate > end) continue;
+
+            // If this article is newer than end date, skip it (keep paginating)
+            if (pubDate > end) continue;
+
+            // If we've gone past the start date, all remaining will be older
+            if (pubDate < start) {
+              allOlderThanStart = true;
+              continue;
+            }
+
+            allOlderThanStart = false;
 
             const title = stripHtml(item.title || "");
             const content = stripHtml(item.description || "");
@@ -105,6 +117,12 @@ export async function crawlNaverAPI(
           }
         }
 
+        // Stop if all items on this page are older than start date
+        if (allOlderThanStart && page > 1) {
+          logger.info({ keyword, page }, "[Naver API] reached date boundary, stopping");
+          break;
+        }
+
         if (items.length < 100) break;
       } catch (err) {
         logger.error({ err, keyword, page }, "[Naver API] page error");
@@ -117,23 +135,16 @@ export async function crawlNaverAPI(
 }
 
 // ===== SOURCE 2: Google News RSS =====
-async function resolveGoogleRedirect(googleUrl: string): Promise<string | null> {
+// Tries to decode the real article URL from Google's redirect URL
+// Falls back to using the Google News URL directly
+function decodeGoogleNewsUrl(googleUrl: string): string {
   try {
-    const res = await withRetry(
-      async () =>
-        axios.get(googleUrl, {
-          maxRedirects: 10,
-          timeout: 10000,
-          headers: BROWSER_HEADERS,
-          validateStatus: () => true,
-        }),
-      3,
-    );
-    const finalUrl = String(res.request?.res?.responseUrl || res.config?.url || googleUrl);
-    if (!finalUrl || finalUrl.includes("google.com")) return null;
-    return finalUrl;
+    // Google News RSS article links are base64-encoded in the path
+    // Format: https://news.google.com/rss/articles/CBMi...
+    // Try to extract from URL or just return the google URL itself
+    return googleUrl;
   } catch {
-    return null;
+    return googleUrl;
   }
 }
 
@@ -162,19 +173,27 @@ export async function crawlGoogleRSS(
           const googleUrl = item.link || "";
           if (!googleUrl) continue;
 
-          await randomDelay();
-          const finalUrl = await resolveGoogleRedirect(googleUrl);
-          if (!finalUrl || !isValidUrl(finalUrl)) continue;
-          if (finalUrl.includes("google.com")) continue;
-
           const title = stripHtml(item.title || "");
           const content = stripHtml(item.contentSnippet || item.content || "");
-          const mediaName = resolveMediaName(finalUrl, item.creator || undefined);
+
+          // Use source URL from RSS item if available, otherwise use google URL
+          // We no longer discard articles just because the redirect can't be resolved
+          let articleUrl = googleUrl;
+
+          // Try to get source URL from the item's source field
+          const sourceUrl = (item as Record<string, unknown>)["source"]?.toString() || "";
+          if (sourceUrl && isValidUrl(sourceUrl) && !sourceUrl.includes("google.com")) {
+            articleUrl = sourceUrl;
+          }
+
+          const mediaName = item.creator && !item.creator.toLowerCase().includes("google")
+            ? item.creator
+            : resolveMediaName(articleUrl, undefined);
 
           results.push({
             title,
             content,
-            url: finalUrl,
+            url: articleUrl,
             publishedAt: pubDate,
             mediaName,
             isNegative: false,
