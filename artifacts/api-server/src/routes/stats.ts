@@ -93,15 +93,25 @@ router.get("/stats/years", async (_req, res): Promise<void> => {
   res.json({ years });
 });
 
-// GET /stats/summary
-router.get("/stats/summary", async (_req, res): Promise<void> => {
+// GET /stats/summary?year=2026
+router.get("/stats/summary", async (req, res): Promise<void> => {
+  const rawYear = req.query["year"];
+  const year = rawYear != null && rawYear !== "" ? Number(rawYear) : null;
+
+  const conditions = [];
+  if (year != null && !isNaN(year)) {
+    conditions.push(sql`EXTRACT(YEAR FROM ${articlesTable.publishedAt}) = ${year}`);
+  }
+  const where = conditions.length > 0 ? and(...conditions) : undefined;
+
   const [row] = await db
     .select({
       totalArticles: sql<number>`COUNT(*)`,
       negativeCount: sql<number>`COUNT(*) FILTER (WHERE ${articlesTable.isNegative} = true)`,
       selfPRCount: sql<number>`COUNT(*) FILTER (WHERE ${articlesTable.isSelfPR} = true)`,
     })
-    .from(articlesTable);
+    .from(articlesTable)
+    .where(where);
 
   const totalArticles = Number(row?.totalArticles ?? 0);
   const negativeCount = Number(row?.negativeCount ?? 0);
@@ -113,6 +123,32 @@ router.get("/stats/summary", async (_req, res): Promise<void> => {
     selfPRCount,
     negativeCount,
   });
+});
+
+// GET /stats/top-media?year=2026&limit=10
+router.get("/stats/top-media", async (req, res): Promise<void> => {
+  const rawYear = req.query["year"];
+  const year = rawYear != null && rawYear !== "" ? Number(rawYear) : null;
+  const limit = Math.min(Number(req.query["limit"] ?? 10), 30);
+
+  const conditions = [];
+  if (year != null && !isNaN(year)) {
+    conditions.push(sql`EXTRACT(YEAR FROM ${articlesTable.publishedAt}) = ${year}`);
+  }
+  const where = conditions.length > 0 ? and(...conditions) : undefined;
+
+  const rows = await db
+    .select({
+      mediaName: articlesTable.mediaName,
+      count: sql<number>`COUNT(*)`,
+    })
+    .from(articlesTable)
+    .where(where)
+    .groupBy(articlesTable.mediaName)
+    .orderBy(sql`COUNT(*) DESC`)
+    .limit(limit);
+
+  res.json(rows.map((r) => ({ mediaName: r.mediaName, count: Number(r.count) })));
 });
 
 // GET /stats/recent

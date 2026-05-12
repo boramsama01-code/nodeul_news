@@ -241,6 +241,11 @@ paths:
       operationId: getStatsSummary
       tags: [stats]
       summary: Get dashboard summary counts
+      parameters:
+        - name: year
+          in: query
+          schema:
+            type: ["integer", "null"]
       responses:
         "200":
           description: Summary stats
@@ -248,6 +253,31 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/StatsSummary"
+
+  /stats/top-media:
+    get:
+      operationId: getTopMedia
+      tags: [stats]
+      summary: Get top media coverage counts
+      parameters:
+        - name: year
+          in: query
+          schema:
+            type: ["integer", "null"]
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 10
+      responses:
+        "200":
+          description: Top media list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/TopMediaItem"
 
   /stats/recent:
     get:
@@ -457,4 +487,15 @@ components:
         selfPRCount:
           type: integer
         negativeCount:
+          type: integer
+
+    TopMediaItem:
+      type: object
+      required:
+        - mediaName
+        - count
+      properties:
+        mediaName:
+          type: string
+        count:
           type: integer

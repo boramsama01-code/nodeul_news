@@ -87,6 +87,11 @@ export interface StatsSummary {
   negativeCount: number;
 }
 
+export interface TopMediaItem {
+  mediaName: string;
+  count: number;
+}
+
 export type ListArticlesParams = {
   /**
    * @nullable
@@ -125,4 +130,19 @@ export type GetMonthlyStatsParams = {
    * @nullable
    */
   endDate?: string | null;
+};
+
+export type GetStatsSummaryParams = {
+  /**
+   * @nullable
+   */
+  year?: number | null;
+};
+
+export type GetTopMediaParams = {
+  /**
+   * @nullable
+   */
+  year?: number | null;
+  limit?: number;
 };

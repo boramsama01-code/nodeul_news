@@ -25,14 +25,32 @@ export function isRelevant(title: string, content: string): boolean {
   return false;
 }
 
-// Media name resolution from URL domain
+// Rule-based negative sentiment analysis (used when ANTHROPIC_API_KEY is not set)
+const NEGATIVE_KEYWORDS = [
+  "논란", "반대", "비판", "비난", "갈등", "충돌", "실패", "취소", "무산",
+  "반발", "항의", "규탄", "성토", "철거", "폐쇄", "민원", "소음", "피해",
+  "불법", "위반", "사고", "사망", "부상", "침수", "화재", "노키즈", "차별",
+  "엉터리", "엉망", "형편없", "최악", "부실", "의혹", "탈세", "비리", "부패",
+  "강제", "퇴출", "폐지", "예산낭비", "세금낭비", "특혜", "특권", "꼼수",
+  "억울", "횡포", "갑질", "호소", "청원", "시위", "집회", "데모",
+];
+
+export function ruleBasedSentiment(title: string, content: string): boolean {
+  const text = (title + " " + content);
+  return NEGATIVE_KEYWORDS.some((kw) => text.includes(kw));
+}
+
+// Extended media name resolution from URL domain
 export function resolveMediaName(url: string, fallbackName?: string): string {
   try {
     const domain = new URL(url).hostname.replace(/^www\./, "");
     const map: Record<string, string> = {
+      // Wire services
       "yna.co.kr": "연합뉴스",
-      "newsis.com": "뉴시스",
+      "yonhapnews.co.kr": "연합뉴스",
       "news1.kr": "뉴스1",
+      "newsis.com": "뉴시스",
+      // National dailies
       "chosun.com": "조선일보",
       "joongang.co.kr": "중앙일보",
       "joins.com": "중앙일보",
@@ -44,11 +62,13 @@ export function resolveMediaName(url: string, fallbackName?: string): string {
       "seoul.co.kr": "서울신문",
       "munhwa.com": "문화일보",
       "hankookilbo.com": "한국일보",
+      // Economy
       "hankyung.com": "한국경제",
       "mk.co.kr": "매일경제",
       "mt.co.kr": "머니투데이",
       "fnnews.com": "파이낸셜뉴스",
       "heraldcorp.com": "헤럴드경제",
+      "biz.heraldcorp.com": "헤럴드경제",
       "sedaily.com": "서울경제",
       "asiae.co.kr": "아시아경제",
       "edaily.co.kr": "이데일리",
@@ -59,6 +79,19 @@ export function resolveMediaName(url: string, fallbackName?: string): string {
       "zdnet.co.kr": "ZDNet Korea",
       "ddaily.co.kr": "디지털데일리",
       "boannews.com": "보안뉴스",
+      "etoday.co.kr": "이투데이",
+      "moneys.co.kr": "머니S",
+      "newspim.com": "뉴스핌",
+      "newstomato.com": "뉴스토마토",
+      "dailian.co.kr": "데일리안",
+      "businesspost.co.kr": "비즈니스포스트",
+      "businesswatch.co.kr": "비즈니스워치",
+      "hansbiz.co.kr": "한스경제",
+      "fetv.co.kr": "FETV",
+      "meconomynews.com": "매경이코노미",
+      "econovill.com": "이코노빌",
+      "mediapen.com": "미디어펜",
+      // Broadcast
       "ytn.co.kr": "YTN",
       "yonhapnewstv.co.kr": "연합뉴스TV",
       "mbc.co.kr": "MBC",
@@ -69,18 +102,40 @@ export function resolveMediaName(url: string, fallbackName?: string): string {
       "tvchosun.com": "TV조선",
       "mbn.co.kr": "MBN",
       "ichannela.com": "채널A",
+      // Internet news
       "nocutnews.co.kr": "노컷뉴스",
       "ohmynews.com": "오마이뉴스",
       "pressian.com": "프레시안",
       "mediatoday.co.kr": "미디어오늘",
       "sisain.co.kr": "시사IN",
       "sisajournal.com": "시사저널",
-      "imaeil.com": "매일신문",
-      "yeongnam.com": "영남일보",
-      "busan.com": "부산일보",
-      "kookje.co.kr": "국제신문",
-      "kgib.co.kr": "경기일보",
+      "sisaon.co.kr": "시사오늘",
+      "ilyo.co.kr": "일요신문",
+      "mindlenews.com": "민들레",
+      "vop.co.kr": "민중의소리",
+      "kukinews.com": "쿠키뉴스",
+      "breaknews.com": "브레이크뉴스",
+      "skyedaily.com": "스카이데일리",
+      "nspna.com": "NSP통신",
+      "newswire.co.kr": "뉴스와이어",
+      // Sports/Entertainment
+      "sportschosun.com": "스포츠조선",
+      "sportsworldi.com": "스포츠서울",
+      "newsen.com": "뉴스엔",
+      "mydaily.co.kr": "마이데일리",
+      "starnews.co.kr": "스타뉴스",
+      "xportsnews.com": "엑스포츠뉴스",
+      "tenasia.hankyung.com": "텐아시아",
+      "osen.co.kr": "OSEN",
+      "topstarnews.net": "톱스타뉴스",
+      "isplus.com": "일간스포츠",
+      "stoo.com": "스포츠투데이",
+      "tvdaily.co.kr": "TV데일리",
+      "slist.kr": "스타일리스트",
+      "bntnews.co.kr": "BNT뉴스",
+      // Regional
       "kyeonggi.com": "경기신문",
+      "kgib.co.kr": "경기일보",
       "joongboo.com": "중부일보",
       "joongboonews.com": "중부일보",
       "incheonilbo.com": "인천일보",
@@ -108,19 +163,15 @@ export function resolveMediaName(url: string, fallbackName?: string): string {
       "jejunews.com": "제주일보",
       "jejusori.net": "제주의소리",
       "ihalla.com": "한라일보",
-      "newstomato.com": "뉴스토마토",
-      "dailian.co.kr": "데일리안",
-      "newspim.com": "뉴스핌",
-      "kukinews.com": "쿠키뉴스",
-      "breaknews.com": "브레이크뉴스",
-      "skyedaily.com": "스카이데일리",
-      "ilyo.co.kr": "일요신문",
-      "sisaon.co.kr": "시사오늘",
-      "mindlenews.com": "민들레",
-      "vop.co.kr": "민중의소리",
+      "imaeil.com": "매일신문",
+      "yeongnam.com": "영남일보",
+      "busan.com": "부산일보",
+      "kookje.co.kr": "국제신문",
+      // Religion
       "newscj.com": "기독신문",
       "christiantoday.co.kr": "크리스천투데이",
       "newsnjoy.or.kr": "뉴스앤조이",
+      // Specialty
       "lawtimes.co.kr": "법률신문",
       "medipana.com": "메디파나뉴스",
       "monews.co.kr": "메디컬투데이",
@@ -129,33 +180,29 @@ export function resolveMediaName(url: string, fallbackName?: string): string {
       "yakup.com": "약업신문",
       "nongmin.com": "농민신문",
       "agrinet.co.kr": "한국농어민신문",
-      "sportschosun.com": "스포츠조선",
-      "sportsworldi.com": "스포츠서울",
-      "newsen.com": "뉴스엔",
-      "mydaily.co.kr": "마이데일리",
-      "starnews.co.kr": "스타뉴스",
-      "xportsnews.com": "엑스포츠뉴스",
-      "tenasia.hankyung.com": "텐아시아",
-      "nspna.com": "NSP통신",
-      "newswire.co.kr": "뉴스와이어",
-      "mediapen.com": "미디어펜",
-      "businesspost.co.kr": "비즈니스포스트",
-      "businesswatch.co.kr": "비즈니스워치",
-      "hansbiz.co.kr": "한스경제",
-      "fetv.co.kr": "FETV",
-      "meconomynews.com": "매경이코노미",
-      "econovill.com": "이코노빌",
-      "etoday.co.kr": "이투데이",
-      "moneys.co.kr": "머니S",
+      // Portals (fallback — we try to get real name)
       "news.naver.com": "네이버뉴스",
       "news.daum.net": "다음뉴스",
+      "v.daum.net": "다음뉴스",
+      // Entertainment sites
+      "discoverynews.kr": "디스커버리뉴스",
     };
     const resolved = map[domain];
     if (resolved) return resolved;
+
+    // For subdomains, try the parent domain
+    const parts = domain.split(".");
+    if (parts.length > 2) {
+      const parent = parts.slice(-2).join(".");
+      if (map[parent]) return map[parent];
+    }
+
     if (
       fallbackName &&
       fallbackName !== "NEWS.GOOGLE" &&
-      !fallbackName.toLowerCase().includes("google")
+      !fallbackName.toLowerCase().includes("google") &&
+      !fallbackName.toLowerCase().includes("naver") &&
+      !fallbackName.toLowerCase().includes("daum")
     ) {
       return fallbackName;
     }
@@ -165,7 +212,8 @@ export function resolveMediaName(url: string, fallbackName?: string): string {
   }
 }
 
-// Deduplication check
+// Deduplication check — URL-based + title+date fingerprint
+// Also handles Google News vs original URL deduplication
 export function isDuplicate(
   url: string,
   title: string,

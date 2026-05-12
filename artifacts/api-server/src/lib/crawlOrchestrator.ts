@@ -7,6 +7,7 @@ import {
   isDuplicate,
   addToSet,
   isValidUrl,
+  ruleBasedSentiment,
   ArticleData,
 } from "./crawlerUtils";
 import {
@@ -83,6 +84,9 @@ export async function runCrawlJob(
 
         addToSet(article.url, article.title, article.publishedAt, existingSet);
 
+        // Apply rule-based sentiment if not already set
+        const isNegative = article.isNegative || ruleBasedSentiment(article.title, article.content);
+
         try {
           await db.insert(articlesTable).values({
             title: article.title,
@@ -90,13 +94,12 @@ export async function runCrawlJob(
             url: article.url,
             publishedAt: article.publishedAt,
             mediaName: article.mediaName,
-            isNegative: article.isNegative,
+            isNegative,
             isSelfPR: article.isSelfPR,
             source: article.source,
           });
           totalCollected++;
         } catch (err: unknown) {
-          // P2002 / unique violation — treat as duplicate
           const code = (err as { code?: string })?.code;
           if (code === "23505" || code === "P2002") {
             totalDuplicates++;
@@ -105,11 +108,25 @@ export async function runCrawlJob(
           }
         }
 
-        await db
-          .update(crawlJobsTable)
-          .set({ collected: totalCollected, duplicates: totalDuplicates })
-          .where(eq(crawlJobsTable.id, jobId));
+        // Update progress every 10 new articles
+        if (totalCollected % 10 === 0) {
+          await db
+            .update(crawlJobsTable)
+            .set({ collected: totalCollected, duplicates: totalDuplicates })
+            .where(eq(crawlJobsTable.id, jobId));
+        }
       }
+
+      // Final update for this source
+      await db
+        .update(crawlJobsTable)
+        .set({ collected: totalCollected, duplicates: totalDuplicates })
+        .where(eq(crawlJobsTable.id, jobId));
+
+      logger.info(
+        { source: source.name, newArticles: totalCollected, duplicates: totalDuplicates },
+        "Source complete",
+      );
     } catch (err) {
       logger.error({ err, source: source.name }, "Source failed");
     }

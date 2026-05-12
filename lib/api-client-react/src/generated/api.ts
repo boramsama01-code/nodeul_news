@@ -25,10 +25,13 @@ import type {
   CrawlJobInput,
   CrawlStartResponse,
   GetMonthlyStatsParams,
+  GetStatsSummaryParams,
+  GetTopMediaParams,
   HealthStatus,
   ListArticlesParams,
   MonthlyStat,
   StatsSummary,
+  TopMediaItem,
   YearsResponse,
 } from "./api.schemas";
 
@@ -897,41 +900,57 @@ export function useGetStatYears<
 /**
  * @summary Get dashboard summary counts
  */
-export const getGetStatsSummaryUrl = () => {
-  return `/api/stats/summary`;
+export const getGetStatsSummaryUrl = (params?: GetStatsSummaryParams) => {
+  const normalizedParams = new URLSearchParams();
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? "null" : value.toString());
+    }
+  });
+
+  const stringifiedParams = normalizedParams.toString();
+
+  return stringifiedParams.length > 0
+    ? `/api/stats/summary?${stringifiedParams}`
+    : `/api/stats/summary`;
 };
 
 export const getStatsSummary = async (
+  params?: GetStatsSummaryParams,
   options?: RequestInit,
 ): Promise<StatsSummary> => {
-  return customFetch<StatsSummary>(getGetStatsSummaryUrl(), {
+  return customFetch<StatsSummary>(getGetStatsSummaryUrl(params), {
     ...options,
     method: "GET",
   });
 };
 
-export const getGetStatsSummaryQueryKey = () => {
-  return [`/api/stats/summary`] as const;
+export const getGetStatsSummaryQueryKey = (params?: GetStatsSummaryParams) => {
+  return [`/api/stats/summary`, ...(params ? [params] : [])] as const;
 };
 
 export const getGetStatsSummaryQueryOptions = <
   TData = Awaited<ReturnType<typeof getStatsSummary>>,
   TError = ErrorType<unknown>,
->(options?: {
-  query?: UseQueryOptions<
-    Awaited<ReturnType<typeof getStatsSummary>>,
-    TError,
-    TData
-  >;
-  request?: SecondParameter<typeof customFetch>;
-}) => {
+>(
+  params?: GetStatsSummaryParams,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof getStatsSummary>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+) => {
   const { query: queryOptions, request: requestOptions } = options ?? {};
 
-  const queryKey = queryOptions?.queryKey ?? getGetStatsSummaryQueryKey();
+  const queryKey = queryOptions?.queryKey ?? getGetStatsSummaryQueryKey(params);
 
   const queryFn: QueryFunction<Awaited<ReturnType<typeof getStatsSummary>>> = ({
     signal,
-  }) => getStatsSummary({ signal, ...requestOptions });
+  }) => getStatsSummary(params, { signal, ...requestOptions });
 
   return { queryKey, queryFn, ...queryOptions } as UseQueryOptions<
     Awaited<ReturnType<typeof getStatsSummary>>,
@@ -952,15 +971,112 @@ export type GetStatsSummaryQueryError = ErrorType<unknown>;
 export function useGetStatsSummary<
   TData = Awaited<ReturnType<typeof getStatsSummary>>,
   TError = ErrorType<unknown>,
->(options?: {
-  query?: UseQueryOptions<
-    Awaited<ReturnType<typeof getStatsSummary>>,
+>(
+  params?: GetStatsSummaryParams,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof getStatsSummary>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+  const queryOptions = getGetStatsSummaryQueryOptions(params, options);
+
+  const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
+    queryKey: QueryKey;
+  };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+/**
+ * @summary Get top media coverage counts
+ */
+export const getGetTopMediaUrl = (params?: GetTopMediaParams) => {
+  const normalizedParams = new URLSearchParams();
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? "null" : value.toString());
+    }
+  });
+
+  const stringifiedParams = normalizedParams.toString();
+
+  return stringifiedParams.length > 0
+    ? `/api/stats/top-media?${stringifiedParams}`
+    : `/api/stats/top-media`;
+};
+
+export const getTopMedia = async (
+  params?: GetTopMediaParams,
+  options?: RequestInit,
+): Promise<TopMediaItem[]> => {
+  return customFetch<TopMediaItem[]>(getGetTopMediaUrl(params), {
+    ...options,
+    method: "GET",
+  });
+};
+
+export const getGetTopMediaQueryKey = (params?: GetTopMediaParams) => {
+  return [`/api/stats/top-media`, ...(params ? [params] : [])] as const;
+};
+
+export const getGetTopMediaQueryOptions = <
+  TData = Awaited<ReturnType<typeof getTopMedia>>,
+  TError = ErrorType<unknown>,
+>(
+  params?: GetTopMediaParams,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof getTopMedia>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey = queryOptions?.queryKey ?? getGetTopMediaQueryKey(params);
+
+  const queryFn: QueryFunction<Awaited<ReturnType<typeof getTopMedia>>> = ({
+    signal,
+  }) => getTopMedia(params, { signal, ...requestOptions });
+
+  return { queryKey, queryFn, ...queryOptions } as UseQueryOptions<
+    Awaited<ReturnType<typeof getTopMedia>>,
     TError,
     TData
-  >;
-  request?: SecondParameter<typeof customFetch>;
-}): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
-  const queryOptions = getGetStatsSummaryQueryOptions(options);
+  > & { queryKey: QueryKey };
+};
+
+export type GetTopMediaQueryResult = NonNullable<
+  Awaited<ReturnType<typeof getTopMedia>>
+>;
+export type GetTopMediaQueryError = ErrorType<unknown>;
+
+/**
+ * @summary Get top media coverage counts
+ */
+
+export function useGetTopMedia<
+  TData = Awaited<ReturnType<typeof getTopMedia>>,
+  TError = ErrorType<unknown>,
+>(
+  params?: GetTopMediaParams,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof getTopMedia>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+  const queryOptions = getGetTopMediaQueryOptions(params, options);
 
   const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
     queryKey: QueryKey;

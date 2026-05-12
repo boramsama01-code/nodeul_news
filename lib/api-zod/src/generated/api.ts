@@ -176,12 +176,32 @@ export const GetStatYearsResponse = zod.object({
 /**
  * @summary Get dashboard summary counts
  */
+export const GetStatsSummaryQueryParams = zod.object({
+  year: zod.coerce.number().nullish(),
+});
+
 export const GetStatsSummaryResponse = zod.object({
   totalArticles: zod.number(),
   statisticalCount: zod.number(),
   selfPRCount: zod.number(),
   negativeCount: zod.number(),
 });
+
+/**
+ * @summary Get top media coverage counts
+ */
+export const getTopMediaQueryLimitDefault = 10;
+
+export const GetTopMediaQueryParams = zod.object({
+  year: zod.coerce.number().nullish(),
+  limit: zod.coerce.number().default(getTopMediaQueryLimitDefault),
+});
+
+export const GetTopMediaResponseItem = zod.object({
+  mediaName: zod.string(),
+  count: zod.number(),
+});
+export const GetTopMediaResponse = zod.array(GetTopMediaResponseItem);
 
 /**
  * @summary Get recent 10 articles for dashboard

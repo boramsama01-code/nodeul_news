@@ -1,11 +1,11 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { logger } from "./logger";
+import { ruleBasedSentiment } from "./crawlerUtils";
 
 let _client: Anthropic | null = null;
 
 function getClient(): Anthropic | null {
   if (!process.env["ANTHROPIC_API_KEY"]) {
-    logger.warn("ANTHROPIC_API_KEY not set — AI analysis unavailable");
     return null;
   }
   if (!_client) {
@@ -14,10 +14,12 @@ function getClient(): Anthropic | null {
   return _client;
 }
 
-export async function analyzeArticleSentiment(
-  title: string,
-  content: string,
-): Promise<boolean> {
+export function hasAiKey(): boolean {
+  return !!process.env["ANTHROPIC_API_KEY"];
+}
+
+// AI-based sentiment (requires ANTHROPIC_API_KEY)
+async function analyzeWithAI(title: string, content: string): Promise<boolean> {
   const client = getClient();
   if (!client) throw new Error("ANTHROPIC_API_KEY is not configured");
 
@@ -42,4 +44,21 @@ export async function analyzeArticleSentiment(
   const cleaned = text.replace(/```json|```/g, "").trim();
   const parsed = JSON.parse(cleaned) as { isNegative: boolean };
   return parsed.isNegative;
+}
+
+// Public API — tries AI first, falls back to rule-based
+export async function analyzeArticleSentiment(
+  title: string,
+  content: string,
+): Promise<boolean> {
+  if (hasAiKey()) {
+    try {
+      return await analyzeWithAI(title, content);
+    } catch (err) {
+      logger.warn({ err }, "AI analysis failed, falling back to rule-based");
+    }
+  } else {
+    logger.warn("ANTHROPIC_API_KEY not set — using rule-based sentiment");
+  }
+  return ruleBasedSentiment(title, content);
 }
