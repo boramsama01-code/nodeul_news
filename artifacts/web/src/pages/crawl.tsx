@@ -4,19 +4,21 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/com
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Progress } from "@/components/ui/progress";
-import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog";
-import { DownloadCloud, CheckCircle2, Clock, Info } from "lucide-react";
+import { DownloadCloud, CheckCircle2, Clock, Info, Rss, Globe } from "lucide-react";
 
-const SOURCES = [
-  { key: "네이버API", label: "네이버 뉴스 API", desc: "키워드 검색 (date+sim 정렬)" },
-  { key: "구글RSS", label: "Google News RSS", desc: "노들섬/노들 키워드" },
-  { key: "다음뉴스", label: "다음 뉴스 검색", desc: "날짜 범위 검색, 최대 30페이지" },
-  { key: "BigKinds", label: "BigKinds 뉴스빅데이터", desc: "한국언론진흥재단 DB" },
-  { key: "RSS피드들", label: "RSS 피드 (~40개 매체)", desc: "연합뉴스, 조선, 중앙 등 주요 언론사" },
-  { key: "언론사검색", label: "언론사 직접 검색", desc: "개별 언론사 검색 기능 활용" },
-  { key: "네이버검색", label: "네이버 모바일 검색", desc: "노들섬/노들 2 키워드 × 10페이지" },
+const SOURCE_GROUPS = [
+  {
+    icon: Rss,
+    label: "RSS 직접 수집 (63개 매체)",
+    desc: "연합뉴스, 조선·중앙·동아·한겨레 등 전국 주요 언론사 RSS 피드를 직접 구독. 수집된 전체 기사 중 \"노들섬\" 키워드 필터링 적용.",
+  },
+  {
+    icon: Globe,
+    label: "구글뉴스 RSS (74개 매체)",
+    desc: "지역지·전문지 등 자체 RSS가 없는 매체를 Google News RSS(site: 연산자)로 수집. 검색 단계에서 이미 \"노들섬\" 키워드 필터됨.",
+  },
 ];
 
 export default function Crawl() {
@@ -76,7 +78,7 @@ export default function Crawl() {
       {
         onSuccess: (data) => {
           setActiveJobId(data.jobId);
-          toast({ title: "수집 시작", description: "백그라운드에서 데이터 수집을 시작합니다." });
+          toast({ title: "수집 시작", description: "137개 언론사에서 병렬로 수집을 시작합니다." });
         },
         onError: () => {
           toast({ title: "수집 시작 실패", description: "서버 연결에 실패했습니다.", variant: "destructive" });
@@ -92,10 +94,9 @@ export default function Crawl() {
     <div className="space-y-6 max-w-2xl mx-auto">
       <div>
         <h2 className="text-2xl font-bold tracking-tight">데이터 수집</h2>
-        <p className="text-sm text-muted-foreground mt-0.5">노들섬 관련 기사를 7개 채널에서 수집합니다 · 매일 자정 자동 수집</p>
+        <p className="text-sm text-muted-foreground mt-0.5">137개 언론사 RSS에서 노들섬 관련 기사를 병렬 수집합니다 · 매일 자정 자동 수집</p>
       </div>
 
-      {/* Auto-crawl notice */}
       <div className="flex items-start gap-2.5 p-3.5 rounded-lg bg-accent/60 border border-accent text-accent-foreground text-sm">
         <Clock className="w-4 h-4 shrink-0 mt-0.5" />
         <div>
@@ -142,7 +143,7 @@ export default function Crawl() {
                 </div>
                 <Progress value={jobStatus.progress} className="h-2" />
                 {currentSource && (
-                  <p className="text-xs text-muted-foreground text-center">현재: {currentSource}</p>
+                  <p className="text-xs text-muted-foreground text-center">{currentSource}</p>
                 )}
               </div>
 
@@ -161,7 +162,6 @@ export default function Crawl() {
         </CardContent>
       </Card>
 
-      {/* Source info */}
       <Card>
         <CardHeader className="pb-3">
           <CardTitle className="text-sm flex items-center gap-2">
@@ -171,24 +171,22 @@ export default function Crawl() {
         </CardHeader>
         <CardContent className="p-0">
           <div className="divide-y">
-            {SOURCES.map((s) => {
-              const isActive = isRunning && currentSource === s.key;
+            {SOURCE_GROUPS.map((g) => {
+              const Icon = g.icon;
               return (
-                <div key={s.key} className={`px-4 py-3 flex items-center gap-3 transition-colors ${isActive ? "bg-accent/40" : ""}`}>
-                  <div className={`w-2 h-2 rounded-full shrink-0 ${isActive ? "bg-primary animate-pulse" : "bg-border"}`} />
-                  <div className="flex-1 min-w-0">
-                    <div className="text-sm font-medium">{s.label}</div>
-                    <div className="text-xs text-muted-foreground">{s.desc}</div>
+                <div key={g.label} className="px-4 py-4 flex items-start gap-3">
+                  <Icon className="w-4 h-4 mt-0.5 shrink-0 text-muted-foreground" />
+                  <div>
+                    <div className="text-sm font-medium">{g.label}</div>
+                    <div className="text-xs text-muted-foreground mt-0.5">{g.desc}</div>
                   </div>
-                  {isActive && <Badge className="text-xs bg-primary/10 text-primary border-primary/20">진행중</Badge>}
                 </div>
               );
             })}
           </div>
           <div className="px-4 py-3 border-t bg-muted/30">
             <p className="text-xs text-muted-foreground">
-              <strong>참고</strong>: RSS 피드는 연합뉴스, 조선일보, 중앙일보, 동아일보 등 약 40개 주요 언론사를 커버합니다.
-              네이버·다음 검색은 포털에 등록된 전체 기사를 대상으로 수집합니다.
+              <strong>감성 분석</strong>: 크롤 수집 시 rule-based 방식으로 자동 판단됩니다. 기사 목록에서 개별 수동 조정이 가능합니다.
             </p>
           </div>
         </CardContent>

@@ -4,7 +4,6 @@ import {
   getListArticlesQueryKey,
   useUpdateArticle,
   useDeleteArticle,
-  useAnalyzeArticle,
   useCreateArticle,
   useGetStatYears,
   getGetStatYearsQueryKey,
@@ -14,16 +13,14 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
-import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useToast } from "@/hooks/use-toast";
-import { Trash2, Sparkles, Plus, ChevronLeft, ChevronRight, Loader2, ExternalLink } from "lucide-react";
+import { Trash2, Plus, ChevronLeft, ChevronRight, Loader2, ExternalLink } from "lucide-react";
 
 const MONTHS = ["전체", "1월", "2월", "3월", "4월", "5월", "6월", "7월", "8월", "9월", "10월", "11월", "12월"];
 const PAGE_SIZE = 20;
@@ -51,8 +48,6 @@ export default function Articles() {
   const [filterSelfPR, setFilterSelfPR] = useState<boolean | undefined>(undefined);
   const [page, setPage] = useState(1);
   const [showAddModal, setShowAddModal] = useState(false);
-  const [analyzingIds, setAnalyzingIds] = useState<Set<number>>(new Set());
-  const [bulkAnalyzing, setBulkAnalyzing] = useState(false);
 
   const { data: yearsData } = useGetStatYears({
     query: { queryKey: getGetStatYearsQueryKey() },
@@ -74,7 +69,6 @@ export default function Articles() {
 
   const updateArticle = useUpdateArticle();
   const deleteArticle = useDeleteArticle();
-  const analyzeArticle = useAnalyzeArticle();
   const createArticle = useCreateArticle();
 
   const invalidate = useCallback(() => {
@@ -99,47 +93,6 @@ export default function Articles() {
     );
   };
 
-  const handleAnalyze = async (id: number) => {
-    setAnalyzingIds((s) => new Set(s).add(id));
-    analyzeArticle.mutate(
-      { id },
-      {
-        onSuccess: (result) => {
-          invalidate();
-          toast({ title: result.isNegative ? "부정 기사로 분류됨" : "부정 기사 아님으로 분류됨" });
-        },
-        onError: () => toast({ title: "감성 분석 실패", variant: "destructive" }),
-        onSettled: () => setAnalyzingIds((s) => { const n = new Set(s); n.delete(id); return n; }),
-      },
-    );
-  };
-
-  const handleBulkAnalyze = async () => {
-    if (!data?.data) return;
-    setBulkAnalyzing(true);
-    const articles = data.data;
-    const batchSize = 5;
-
-    for (let i = 0; i < articles.length; i += batchSize) {
-      const batch = articles.slice(i, i + batchSize);
-      const ids = batch.map((a) => a.id);
-      setAnalyzingIds((s) => { const n = new Set(s); ids.forEach((id) => n.add(id)); return n; });
-      await Promise.allSettled(
-        batch.map((a) =>
-          new Promise<void>((resolve) => {
-            analyzeArticle.mutate({ id: a.id }, { onSettled: () => resolve() });
-          }),
-        ),
-      );
-      setAnalyzingIds((s) => { const n = new Set(s); ids.forEach((id) => n.delete(id)); return n; });
-      if (i + batchSize < articles.length) await sleep(1000);
-    }
-
-    setBulkAnalyzing(false);
-    invalidate();
-    toast({ title: "감성 분석 완료", description: `${articles.length}건 처리됨` });
-  };
-
   const applyFilters = () => { setPage(1); refetch(); };
   const resetFilters = () => {
     setYear(undefined); setMonth(undefined); setKeyword("");
@@ -155,20 +108,9 @@ export default function Articles() {
           <h2 className="text-2xl font-bold tracking-tight">기사 목록</h2>
           <p className="text-sm text-muted-foreground mt-0.5">수집된 노들섬 관련 기사 전체</p>
         </div>
-        <div className="flex gap-2">
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={handleBulkAnalyze}
-            disabled={bulkAnalyzing || isLoading || !data?.data?.length}
-          >
-            {bulkAnalyzing ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Sparkles className="w-4 h-4 mr-2" />}
-            감성 분석
-          </Button>
-          <Button size="sm" onClick={() => setShowAddModal(true)}>
-            <Plus className="w-4 h-4 mr-2" /> 수기 추가
-          </Button>
-        </div>
+        <Button size="sm" onClick={() => setShowAddModal(true)}>
+          <Plus className="w-4 h-4 mr-2" /> 수기 추가
+        </Button>
       </div>
 
       {/* Filter Bar */}
@@ -274,7 +216,6 @@ export default function Articles() {
                     <th className="px-4 py-2.5 text-left font-medium">제목 / 미리보기</th>
                     <th className="px-4 py-2.5 text-center font-medium whitespace-nowrap">부정</th>
                     <th className="px-4 py-2.5 text-center font-medium whitespace-nowrap">자체</th>
-                    <th className="px-4 py-2.5 text-center font-medium whitespace-nowrap">분석</th>
                     <th className="px-4 py-2.5 text-center font-medium whitespace-nowrap">삭제</th>
                   </tr>
                 </thead>
@@ -322,26 +263,6 @@ export default function Articles() {
                           />
                         </td>
                         <td className="px-4 py-2.5 text-center">
-                          <Tooltip>
-                            <TooltipTrigger asChild>
-                              <Button
-                                size="icon"
-                                variant="ghost"
-                                className="h-7 w-7"
-                                onClick={() => handleAnalyze(article.id)}
-                                disabled={analyzingIds.has(article.id)}
-                              >
-                                {analyzingIds.has(article.id) ? (
-                                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                                ) : (
-                                  <Sparkles className="w-3.5 h-3.5" />
-                                )}
-                              </Button>
-                            </TooltipTrigger>
-                            <TooltipContent>부정 여부 자동 분석</TooltipContent>
-                          </Tooltip>
-                        </td>
-                        <td className="px-4 py-2.5 text-center">
                           <Button
                             size="icon"
                             variant="ghost"
@@ -356,7 +277,7 @@ export default function Articles() {
                   })}
                   {(!data?.data || data.data.length === 0) && (
                     <tr>
-                      <td colSpan={7} className="px-4 py-12 text-center text-muted-foreground">
+                      <td colSpan={6} className="px-4 py-12 text-center text-muted-foreground">
                         기사가 없습니다.
                       </td>
                     </tr>
@@ -478,8 +399,4 @@ function computePages(current: number, total: number): (number | null)[] {
   if (current <= 4) return [1, 2, 3, 4, 5, null, total];
   if (current >= total - 3) return [1, null, total - 4, total - 3, total - 2, total - 1, total];
   return [1, null, current - 1, current, current + 1, null, total];
-}
-
-function sleep(ms: number) {
-  return new Promise((r) => setTimeout(r, ms));
 }

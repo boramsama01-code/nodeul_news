@@ -10,15 +10,7 @@ import {
   ruleBasedSentiment,
   ArticleData,
 } from "./crawlerUtils";
-import {
-  crawlNaverAPI,
-  crawlGoogleRSS,
-  crawlDaumNews,
-  crawlBigKinds,
-  crawlRSSFeeds,
-  crawlPublisherSearch,
-  crawlNaverSearch,
-} from "./crawlerSources";
+import { crawlAllSources } from "./crawlerSources";
 
 async function loadExistingSet(): Promise<Set<string>> {
   const existingSet = new Set<string>();
@@ -39,18 +31,6 @@ async function loadExistingSet(): Promise<Set<string>> {
   return existingSet;
 }
 
-type SourceRunner = (start: string, end: string) => Promise<ArticleData[]>;
-
-const SOURCES: { name: string; fn: SourceRunner }[] = [
-  { name: "네이버API", fn: crawlNaverAPI },
-  { name: "구글RSS", fn: crawlGoogleRSS },
-  { name: "다음뉴스", fn: crawlDaumNews },
-  { name: "BigKinds", fn: crawlBigKinds },
-  { name: "RSS피드들", fn: crawlRSSFeeds },
-  { name: "언론사검색", fn: crawlPublisherSearch },
-  { name: "네이버검색", fn: crawlNaverSearch },
-];
-
 export async function runCrawlJob(
   jobId: string,
   startDate: string,
@@ -60,75 +40,75 @@ export async function runCrawlJob(
   let totalCollected = 0;
   let totalDuplicates = 0;
 
-  for (let i = 0; i < SOURCES.length; i++) {
-    const source = SOURCES[i];
-    const progress = Math.round((i / SOURCES.length) * 90);
+  await db
+    .update(crawlJobsTable)
+    .set({ currentSource: "137개 언론사 RSS 병렬 수집 중…", progress: 10 })
+    .where(eq(crawlJobsTable.id, jobId));
 
+  logger.info({ jobId }, "Starting parallel crawl of 137 sources");
+
+  let articles: ArticleData[] = [];
+  try {
+    articles = await crawlAllSources(startDate, endDate);
+  } catch (err) {
+    logger.error({ err, jobId }, "crawlAllSources failed");
     await db
       .update(crawlJobsTable)
-      .set({ currentSource: source.name, progress })
+      .set({ status: "error", error: String(err) })
       .where(eq(crawlJobsTable.id, jobId));
+    return;
+  }
 
-    logger.info({ source: source.name, jobId }, "Starting crawl source");
+  await db
+    .update(crawlJobsTable)
+    .set({ currentSource: "중복 제거 및 DB 저장 중…", progress: 70 })
+    .where(eq(crawlJobsTable.id, jobId));
+
+  logger.info({ jobId, raw: articles.length }, "Crawl complete, deduplicating");
+
+  for (const article of articles) {
+    if (!isRelevant(article.title, article.content)) continue;
+    if (!isValidUrl(article.url)) continue;
+    if (isDuplicate(article.url, article.title, article.publishedAt, existingSet)) {
+      totalDuplicates++;
+      continue;
+    }
+
+    addToSet(article.url, article.title, article.publishedAt, existingSet);
+
+    const isNegative =
+      article.isNegative || ruleBasedSentiment(article.title, article.content);
 
     try {
-      const articles = await source.fn(startDate, endDate);
-
-      for (const article of articles) {
-        if (!isRelevant(article.title, article.content)) continue;
-        if (!isValidUrl(article.url)) continue;
-        if (isDuplicate(article.url, article.title, article.publishedAt, existingSet)) {
-          totalDuplicates++;
-          continue;
-        }
-
-        addToSet(article.url, article.title, article.publishedAt, existingSet);
-
-        // Apply rule-based sentiment if not already set
-        const isNegative = article.isNegative || ruleBasedSentiment(article.title, article.content);
-
-        try {
-          await db.insert(articlesTable).values({
-            title: article.title,
-            content: article.content,
-            url: article.url,
-            publishedAt: article.publishedAt,
-            mediaName: article.mediaName,
-            isNegative,
-            isSelfPR: article.isSelfPR,
-            source: article.source,
-          });
-          totalCollected++;
-        } catch (err: unknown) {
-          const code = (err as { code?: string })?.code;
-          if (code === "23505" || code === "P2002") {
-            totalDuplicates++;
-          } else {
-            logger.error({ err }, "Failed to insert article");
-          }
-        }
-
-        // Update progress every 10 new articles
-        if (totalCollected % 10 === 0) {
-          await db
-            .update(crawlJobsTable)
-            .set({ collected: totalCollected, duplicates: totalDuplicates })
-            .where(eq(crawlJobsTable.id, jobId));
-        }
+      await db.insert(articlesTable).values({
+        title: article.title,
+        content: article.content,
+        url: article.url,
+        publishedAt: article.publishedAt,
+        mediaName: article.mediaName,
+        isNegative,
+        isSelfPR: article.isSelfPR,
+        source: article.source,
+      });
+      totalCollected++;
+    } catch (err: unknown) {
+      const code = (err as { code?: string })?.code;
+      if (code === "23505" || code === "P2002") {
+        totalDuplicates++;
+      } else {
+        logger.error({ err }, "Failed to insert article");
       }
+    }
 
-      // Final update for this source
+    if (totalCollected % 20 === 0) {
+      const progress = Math.min(
+        95,
+        70 + Math.round((totalCollected / Math.max(articles.length, 1)) * 25),
+      );
       await db
         .update(crawlJobsTable)
-        .set({ collected: totalCollected, duplicates: totalDuplicates })
+        .set({ collected: totalCollected, duplicates: totalDuplicates, progress })
         .where(eq(crawlJobsTable.id, jobId));
-
-      logger.info(
-        { source: source.name, newArticles: totalCollected, duplicates: totalDuplicates },
-        "Source complete",
-      );
-    } catch (err) {
-      logger.error({ err, source: source.name }, "Source failed");
     }
   }
 
@@ -137,6 +117,7 @@ export async function runCrawlJob(
     .set({
       status: "done",
       progress: 100,
+      currentSource: "",
       total: totalCollected + totalDuplicates,
       collected: totalCollected,
       duplicates: totalDuplicates,
