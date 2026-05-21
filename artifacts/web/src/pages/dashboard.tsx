@@ -12,7 +12,7 @@ import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
-  LineChart, Line, Legend, ComposedChart,
+  Line, Legend, ComposedChart, ReferenceLine, Cell,
 } from "recharts";
 import { TrendingUp, TrendingDown, Minus, Newspaper, AlertTriangle, Megaphone, BarChart2 } from "lucide-react";
 
@@ -28,12 +28,27 @@ function getArticlePreview(content: string, title: string): string {
   return text.slice(0, 70) + (text.length > 70 ? "…" : "");
 }
 
-function TrendBadge({ current, previous }: { current: number; previous: number }) {
-  if (previous === 0) return null;
-  const pct = Math.round(((current - previous) / previous) * 100);
-  if (pct === 0) return <span className="text-xs text-muted-foreground flex items-center gap-0.5"><Minus className="w-3 h-3" />0%</span>;
-  if (pct > 0) return <span className="text-xs text-emerald-600 flex items-center gap-0.5"><TrendingUp className="w-3 h-3" />+{pct}%</span>;
-  return <span className="text-xs text-destructive flex items-center gap-0.5"><TrendingDown className="w-3 h-3" />{pct}%</span>;
+function YoYBadge({ current, previous }: { current: number; previous: number }) {
+  if (previous === 0) return <span className="text-xs text-muted-foreground">전년 데이터 없음</span>;
+  const delta = current - previous;
+  const pct = Math.round((delta / previous) * 100);
+  if (pct === 0)
+    return (
+      <span className="text-xs text-muted-foreground flex items-center gap-0.5">
+        <Minus className="w-3 h-3" />전년 대비 ±0%
+      </span>
+    );
+  if (delta > 0)
+    return (
+      <span className="text-xs text-emerald-600 flex items-center gap-0.5">
+        <TrendingUp className="w-3 h-3" />전년 대비 +{pct}% (+{delta.toLocaleString()}건)
+      </span>
+    );
+  return (
+    <span className="text-xs text-destructive flex items-center gap-0.5">
+      <TrendingDown className="w-3 h-3" />전년 대비 {pct}% ({delta.toLocaleString()}건)
+    </span>
+  );
 }
 
 export default function Dashboard() {
@@ -71,14 +86,15 @@ export default function Dashboard() {
     query: { queryKey: getGetRecentArticlesQueryKey() },
   });
 
-  // Merge monthly data for chart
+  // Build chart data: bar = 올해, dashed line = 전년, hidden line = 전년대비증감
   const chartData = (monthlyStats || []).map((m) => {
     const prev = prevYearMonthly?.find((p) => p.month === m.month);
+    const prevTotal = prev?.total ?? 0;
     return {
       month: m.month,
-      현재: m.total,
-      전년도: prev?.total ?? 0,
-      부정: m.negative,
+      올해: m.total,
+      전년: prevTotal,
+      증감: m.total - prevTotal,
     };
   });
 
@@ -97,7 +113,7 @@ export default function Dashboard() {
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
           <h2 className="text-2xl font-bold tracking-tight">노들섬 언론 모니터링</h2>
-          <p className="text-sm text-muted-foreground mt-0.5">언론 보도 현황 및 동향 분석</p>
+          <p className="text-sm text-muted-foreground mt-0.5">언론 보도 현황 및 전년 대비 동향</p>
         </div>
         <Select value={String(selectedYear)} onValueChange={(v) => setSelectedYear(Number(v))}>
           <SelectTrigger className="w-28 h-9 font-medium">
@@ -120,7 +136,6 @@ export default function Dashboard() {
           loading={loadingSummary}
           icon={<Newspaper className="w-4 h-4" />}
           color="blue"
-          unit="건"
         />
         <KpiCard
           title="부정 기사"
@@ -129,8 +144,7 @@ export default function Dashboard() {
           loading={loadingSummary}
           icon={<AlertTriangle className="w-4 h-4" />}
           color="red"
-          unit="건"
-          sub={`비율 ${negativeRate}%`}
+          sub={`부정 비율 ${negativeRate}%${prevSummary ? ` (전년 ${prevNegativeRate}%)` : ""}`}
         />
         <KpiCard
           title="자체보도자료"
@@ -139,7 +153,6 @@ export default function Dashboard() {
           loading={loadingSummary}
           icon={<Megaphone className="w-4 h-4" />}
           color="teal"
-          unit="건"
         />
         <KpiCard
           title="통계 보도건수"
@@ -148,18 +161,17 @@ export default function Dashboard() {
           loading={loadingSummary}
           icon={<BarChart2 className="w-4 h-4" />}
           color="amber"
-          unit="건"
-          sub={`부정률 ${negativeRate}% → ${prevNegativeRate}% (전년)`}
         />
       </div>
 
-      {/* Main Charts Row */}
+      {/* Charts Row */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* Monthly Trend Chart */}
+        {/* Monthly Trend */}
         <Card className="col-span-1 lg:col-span-2">
-          <CardHeader className="pb-3">
-            <CardTitle className="text-base">
-              월별 보도 현황 — {selectedYear}년 vs {selectedYear - 1}년
+          <CardHeader className="pb-2">
+            <CardTitle className="text-base flex items-center justify-between">
+              <span>월별 보도 추이</span>
+              <span className="text-xs font-normal text-muted-foreground">올해 vs 전년 대비</span>
             </CardTitle>
           </CardHeader>
           <CardContent>
@@ -184,6 +196,10 @@ export default function Dashboard() {
                     />
                     <Tooltip
                       labelFormatter={(v) => `${v}월`}
+                      formatter={(value: number, name: string) => {
+                        if (name === "증감") return [`${value > 0 ? "+" : ""}${value}건`, "전년 대비"];
+                        return [`${value}건`, name];
+                      }}
                       contentStyle={{
                         borderRadius: "8px",
                         border: "1px solid hsl(var(--border))",
@@ -196,11 +212,10 @@ export default function Dashboard() {
                       iconSize={8}
                       wrapperStyle={{ fontSize: "12px", paddingTop: "8px" }}
                     />
-                    <Bar dataKey="현재" name={`${selectedYear}년`} fill="hsl(var(--chart-1))" radius={[3, 3, 0, 0]} maxBarSize={36} />
+                    <Bar dataKey="올해" fill="hsl(var(--chart-1))" radius={[3, 3, 0, 0]} maxBarSize={36} />
                     <Line
                       type="monotone"
-                      dataKey="전년도"
-                      name={`${selectedYear - 1}년`}
+                      dataKey="전년"
                       stroke="hsl(var(--chart-4))"
                       strokeWidth={2}
                       strokeDasharray="4 3"
@@ -251,6 +266,63 @@ export default function Dashboard() {
           </CardContent>
         </Card>
       </div>
+
+      {/* YoY Monthly Delta Chart */}
+      {prevYearMonthly && prevYearMonthly.some((m) => m.total > 0) && (
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-base flex items-center justify-between">
+              <span>전년 대비 월별 증감</span>
+              <span className="text-xs font-normal text-muted-foreground">{selectedYear - 1}년 대비 +/-건</span>
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            {loadingMonthly ? (
+              <Skeleton className="w-full h-[160px]" />
+            ) : (
+              <div className="h-[160px]">
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={chartData} margin={{ top: 4, right: 4, bottom: 0, left: -20 }}>
+                    <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="hsl(var(--border))" />
+                    <XAxis
+                      dataKey="month"
+                      tickFormatter={(v) => `${v}월`}
+                      tick={{ fontSize: 11, fill: "hsl(var(--muted-foreground))" }}
+                      axisLine={false}
+                      tickLine={false}
+                    />
+                    <YAxis
+                      tick={{ fontSize: 11, fill: "hsl(var(--muted-foreground))" }}
+                      axisLine={false}
+                      tickLine={false}
+                    />
+                    <Tooltip
+                      labelFormatter={(v) => `${v}월`}
+                      formatter={(value: number) => [`${value > 0 ? "+" : ""}${value}건`, "전년 대비 증감"]}
+                      contentStyle={{
+                        borderRadius: "8px",
+                        border: "1px solid hsl(var(--border))",
+                        fontSize: "12px",
+                        background: "hsl(var(--card))",
+                      }}
+                    />
+                    <ReferenceLine y={0} stroke="hsl(var(--border))" strokeWidth={1.5} />
+                    <Bar dataKey="증감" radius={[3, 3, 0, 0]} maxBarSize={40}>
+                      {chartData.map((entry, index) => (
+                        <Cell
+                          key={index}
+                          fill={entry.증감 >= 0 ? "hsl(var(--chart-1))" : "hsl(var(--destructive))"}
+                          fillOpacity={0.85}
+                        />
+                      ))}
+                    </Bar>
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      )}
 
       {/* Recent Articles */}
       <Card>
@@ -317,7 +389,7 @@ const colorMap = {
 };
 
 function KpiCard({
-  title, value, prev, loading, icon, color, unit, sub,
+  title, value, prev, loading, icon, color, sub,
 }: {
   title: string;
   value?: number;
@@ -325,7 +397,6 @@ function KpiCard({
   loading: boolean;
   icon: React.ReactNode;
   color: keyof typeof colorMap;
-  unit?: string;
   sub?: string;
 }) {
   const c = colorMap[color];
@@ -344,14 +415,11 @@ function KpiCard({
           <div>
             <div className="flex items-baseline gap-2">
               <span className="text-2xl font-bold">{(value ?? 0).toLocaleString()}</span>
-              {unit && <span className="text-sm text-muted-foreground">{unit}</span>}
+              <span className="text-sm text-muted-foreground">건</span>
             </div>
-            <div className="flex items-center gap-2 mt-1">
-              {prev != null && <TrendBadge current={value ?? 0} previous={prev} />}
-              {sub && <span className="text-[10px] text-muted-foreground truncate">{sub}</span>}
-              {prev != null && !sub && (
-                <span className="text-[10px] text-muted-foreground">전년 {prev.toLocaleString()}건</span>
-              )}
+            <div className="mt-1.5 space-y-0.5">
+              {prev != null && <YoYBadge current={value ?? 0} previous={prev} />}
+              {sub && <span className="text-[10px] text-muted-foreground block">{sub}</span>}
             </div>
           </div>
         )}
