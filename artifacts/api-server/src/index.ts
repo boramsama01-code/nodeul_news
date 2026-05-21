@@ -1,8 +1,7 @@
 import app from "./app";
 import { logger } from "./lib/logger";
-import { db, crawlJobsTable } from "@workspace/db";
-import { eq, and, lt } from "drizzle-orm";
-import { sql } from "drizzle-orm";
+import { db, crawlJobsTable, articlesTable } from "@workspace/db";
+import { eq, and, lt, count } from "drizzle-orm";
 import { v4 as uuidv4 } from "uuid";
 import { runCrawlJob } from "./lib/crawlOrchestrator";
 
@@ -43,6 +42,72 @@ async function recoverStaleJobs(): Promise<void> {
   }
 }
 
+// On startup: if DB is empty or last crawl was >23h ago, run a catch-up crawl
+async function startupCrawlIfNeeded(): Promise<void> {
+  try {
+    const [{ total }] = await db.select({ total: count() }).from(articlesTable);
+    const isEmpty = total === 0;
+
+    // Find the most recent successful crawl job
+    const [lastJob] = await db
+      .select()
+      .from(crawlJobsTable)
+      .orderBy(crawlJobsTable.createdAt)
+      .limit(1);
+
+    const twentyThreeHoursAgo = new Date(Date.now() - 23 * 60 * 60 * 1000);
+    const needsCrawl =
+      isEmpty ||
+      !lastJob ||
+      lastJob.createdAt < twentyThreeHoursAgo;
+
+    if (!needsCrawl) {
+      logger.info({ total }, "DB has recent data, skipping startup crawl");
+      return;
+    }
+
+    // Determine date range: if empty, crawl last 365 days; otherwise yesterday only
+    const endDate = new Date();
+    endDate.setDate(endDate.getDate() - 0);
+    const startDate = new Date();
+    if (isEmpty) {
+      startDate.setDate(startDate.getDate() - 365);
+      logger.info("DB is empty — running initial crawl for last 365 days");
+    } else {
+      startDate.setDate(startDate.getDate() - 1);
+      logger.info("Running catch-up crawl for yesterday");
+    }
+
+    const startStr = startDate.toISOString().split("T")[0];
+    const endStr = endDate.toISOString().split("T")[0];
+    const jobId = uuidv4();
+
+    await db.insert(crawlJobsTable).values({
+      id: jobId,
+      status: "running",
+      collected: 0,
+      duplicates: 0,
+      total: 0,
+      progress: 0,
+      currentSource: "",
+      error: "",
+    });
+
+    // Fire and forget — don't block server startup
+    runCrawlJob(jobId, startStr, endStr)
+      .then(() => logger.info({ jobId, startStr, endStr }, "Startup crawl complete"))
+      .catch((err) => {
+        logger.error({ err, jobId }, "Startup crawl failed");
+        db.update(crawlJobsTable)
+          .set({ status: "error", error: String(err) })
+          .where(eq(crawlJobsTable.id, jobId))
+          .catch(() => {});
+      });
+  } catch (err) {
+    logger.error({ err }, "startupCrawlIfNeeded failed");
+  }
+}
+
 // Schedule daily auto-crawl at midnight KST (= 15:00 UTC)
 function scheduleMidnightCrawl(): void {
   const now = new Date();
@@ -56,17 +121,15 @@ function scheduleMidnightCrawl(): void {
 
   logger.info(
     { nextRun: nextRun.toISOString(), delayHours: Math.round(delayMs / 3600000) },
-    "Auto-crawl scheduled",
+    "Daily auto-crawl scheduled",
   );
 
   setTimeout(async () => {
-    // Crawl yesterday
-    const yesterday = new Date();
-    yesterday.setDate(yesterday.getDate() - 1);
-    const dateStr = yesterday.toISOString().split("T")[0];
+    const today = new Date();
+    const dateStr = today.toISOString().split("T")[0];
     const jobId = uuidv4();
 
-    logger.info({ jobId, date: dateStr }, "Auto-crawl starting (midnight KST)");
+    logger.info({ jobId, date: dateStr }, "Daily auto-crawl starting (midnight KST)");
 
     try {
       await db.insert(crawlJobsTable).values({
@@ -81,9 +144,9 @@ function scheduleMidnightCrawl(): void {
       });
 
       await runCrawlJob(jobId, dateStr, dateStr);
-      logger.info({ jobId, date: dateStr }, "Auto-crawl complete");
+      logger.info({ jobId, date: dateStr }, "Daily auto-crawl complete");
     } catch (err) {
-      logger.error({ err, jobId }, "Auto-crawl failed");
+      logger.error({ err, jobId }, "Daily auto-crawl failed");
       await db
         .update(crawlJobsTable)
         .set({ status: "error", error: String(err) })
@@ -96,13 +159,17 @@ function scheduleMidnightCrawl(): void {
   }, delayMs);
 }
 
-recoverStaleJobs().then(() => {
-  app.listen(port, (err) => {
-    if (err) {
-      logger.error({ err }, "Error listening on port");
-      process.exit(1);
-    }
-    logger.info({ port }, "Server listening");
-    scheduleMidnightCrawl();
+recoverStaleJobs()
+  .then(() => {
+    app.listen(port, (err) => {
+      if (err) {
+        logger.error({ err }, "Error listening on port");
+        process.exit(1);
+      }
+      logger.info({ port }, "Server listening");
+      // Run startup crawl if needed (non-blocking)
+      startupCrawlIfNeeded();
+      // Schedule daily midnight crawl
+      scheduleMidnightCrawl();
+    });
   });
-});
