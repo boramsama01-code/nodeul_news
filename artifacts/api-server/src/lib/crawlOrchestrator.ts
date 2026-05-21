@@ -10,7 +10,7 @@ import {
   ruleBasedSentiment,
   ArticleData,
 } from "./crawlerUtils";
-import { crawlAllSources } from "./crawlerSources";
+import { crawlAllSources, crawlNaverNews } from "./crawlerSources";
 
 async function loadExistingSet(): Promise<Set<string>> {
   const existingSet = new Set<string>();
@@ -42,29 +42,41 @@ export async function runCrawlJob(
 
   await db
     .update(crawlJobsTable)
-    .set({ currentSource: "137개 언론사 RSS 병렬 수집 중…", progress: 10 })
+    .set({ currentSource: "네이버API + RSS 병렬 수집 중…", progress: 5 })
     .where(eq(crawlJobsTable.id, jobId));
 
-  logger.info({ jobId }, "Starting parallel crawl of 137 sources");
+  logger.info({ jobId }, "Starting parallel crawl: Naver API + RSS sources");
 
-  let articles: ArticleData[] = [];
-  try {
-    articles = await crawlAllSources(startDate, endDate);
-  } catch (err) {
-    logger.error({ err, jobId }, "crawlAllSources failed");
-    await db
-      .update(crawlJobsTable)
-      .set({ status: "error", error: String(err) })
-      .where(eq(crawlJobsTable.id, jobId));
-    return;
+  // Run Naver API and RSS sources in parallel
+  const [naverArticles, rssArticles] = await Promise.allSettled([
+    crawlNaverNews(startDate, endDate),
+    crawlAllSources(startDate, endDate),
+  ]);
+
+  const naverResults = naverArticles.status === "fulfilled" ? naverArticles.value : [];
+  const rssResults = rssArticles.status === "fulfilled" ? rssArticles.value : [];
+
+  if (naverArticles.status === "rejected") {
+    logger.error({ err: naverArticles.reason, jobId }, "Naver crawl failed");
   }
+  if (rssArticles.status === "rejected") {
+    logger.error({ err: rssArticles.reason, jobId }, "RSS crawl failed");
+  }
+
+  const articles: ArticleData[] = [...naverResults, ...rssResults];
 
   await db
     .update(crawlJobsTable)
-    .set({ currentSource: "중복 제거 및 DB 저장 중…", progress: 70 })
+    .set({
+      currentSource: "중복 제거 및 DB 저장 중…",
+      progress: 60,
+    })
     .where(eq(crawlJobsTable.id, jobId));
 
-  logger.info({ jobId, raw: articles.length }, "Crawl complete, deduplicating");
+  logger.info(
+    { jobId, naver: naverResults.length, rss: rssResults.length, total: articles.length },
+    "Crawl complete, deduplicating",
+  );
 
   for (const article of articles) {
     if (!isRelevant(article.title, article.content)) continue;
@@ -103,7 +115,7 @@ export async function runCrawlJob(
     if (totalCollected % 20 === 0) {
       const progress = Math.min(
         95,
-        70 + Math.round((totalCollected / Math.max(articles.length, 1)) * 25),
+        60 + Math.round((totalCollected / Math.max(articles.length, 1)) * 35),
       );
       await db
         .update(crawlJobsTable)

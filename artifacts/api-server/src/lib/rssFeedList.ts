@@ -8,6 +8,16 @@ export interface NewsSource {
 }
 
 export const NEWS_SOURCES: NewsSource[] = [
+  // ── 광역 구글뉴스 RSS (사이트 제한 없음 — 전 언론사 노들섬 기사 수집) ──
+  {"name":"구글뉴스-노들섬","method":"google_news_rss","url":"https://news.google.com/rss/search?q=%EB%85%B8%EB%93%A4%EC%84%AC&hl=ko&gl=KR&ceid=KR:ko","domain":"news.google.com"},
+  {"name":"구글뉴스-노들섬서울","method":"google_news_rss","url":"https://news.google.com/rss/search?q=%EB%85%B8%EB%93%A4%EC%84%AC+%EC%84%9C%EC%9A%B8&hl=ko&gl=KR&ceid=KR:ko","domain":"news.google.com"},
+  {"name":"구글뉴스-노들예술섬","method":"google_news_rss","url":"https://news.google.com/rss/search?q=%EB%85%B8%EB%93%A4+%EC%98%88%EC%88%A0%EC%84%AC&hl=ko&gl=KR&ceid=KR:ko","domain":"news.google.com"},
+  {"name":"구글뉴스-노들섬공연","method":"google_news_rss","url":"https://news.google.com/rss/search?q=%EB%85%B8%EB%93%A4%EC%84%AC+%EA%B3%B5%EC%97%B0&hl=ko&gl=KR&ceid=KR:ko","domain":"news.google.com"},
+  {"name":"구글뉴스-노들섬한강","method":"google_news_rss","url":"https://news.google.com/rss/search?q=%EB%85%B8%EB%93%A4%EC%84%AC+%ED%95%9C%EA%B0%95&hl=ko&gl=KR&ceid=KR:ko","domain":"news.google.com"},
+  {"name":"구글뉴스-노들섬개발","method":"google_news_rss","url":"https://news.google.com/rss/search?q=%EB%85%B8%EB%93%A4%EC%84%AC+%EA%B0%9C%EB%B0%9C&hl=ko&gl=KR&ceid=KR:ko","domain":"news.google.com"},
+  {"name":"구글뉴스-노들섬축제","method":"google_news_rss","url":"https://news.google.com/rss/search?q=%EB%85%B8%EB%93%A4%EC%84%AC+%EC%B6%95%EC%A0%9C&hl=ko&gl=KR&ceid=KR:ko","domain":"news.google.com"},
+  {"name":"구글뉴스-노들섬문화","method":"google_news_rss","url":"https://news.google.com/rss/search?q=%EB%85%B8%EB%93%A4%EC%84%AC+%EB%AC%B8%ED%99%94&hl=ko&gl=KR&ceid=KR:ko","domain":"news.google.com"},
+  // ── 주요 언론사 전체 RSS (키워드 필터링) ──
   {"name":"경향신문","method":"rss_direct","url":"https://www.khan.co.kr/rss/rssdata/total_news.xml","domain":"khan.co.kr"},
   {"name":"국민일보","method":"rss_direct","url":"https://www.kmib.co.kr/rss/kmibRss.xml?typeFlag=0","domain":"kmib.co.kr"},
   {"name":"동아일보","method":"rss_direct","url":"https://rss.donga.com/total.xml","domain":"donga.com"},
