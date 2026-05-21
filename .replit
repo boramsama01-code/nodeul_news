@@ -1,4 +1,4 @@
-modules = ["nodejs-24"]
+modules = ["nodejs-24", "postgresql-16"]
 
 [deployment]
 router = "application"
@@ -73,3 +73,6 @@ externalPort = 3000
 [userenv.shared]
 NAVER_CLIENT_ID = "Bdnb5ZUwP3Ye3jb0az5Q"
 NAVER_CLIENT_SECRET = "bzIA0_exdV"
+
+[nix]
+channel = "stable-25_05"
