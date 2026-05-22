@@ -197,6 +197,7 @@ export const GetStatsSummaryResponse = zod.object({
   statisticalCount: zod.number(),
   selfPRCount: zod.number(),
   negativeCount: zod.number(),
+  totalAllTime: zod.number(),
 });
 
 /**

@@ -105,24 +105,31 @@ router.get("/stats/summary", async (req, res): Promise<void> => {
   }
   const where = conditions.length > 0 ? and(...conditions) : undefined;
 
-  const [row] = await db
-    .select({
-      totalArticles: sql<number>`COUNT(*)`,
-      negativeCount: sql<number>`COUNT(*) FILTER (WHERE ${articlesTable.isNegative} = true)`,
-      selfPRCount: sql<number>`COUNT(*) FILTER (WHERE ${articlesTable.isSelfPR} = true)`,
-    })
-    .from(articlesTable)
-    .where(where);
+  const [[row], [allTimeRow]] = await Promise.all([
+    db
+      .select({
+        totalArticles: sql<number>`COUNT(*)`,
+        negativeCount: sql<number>`COUNT(*) FILTER (WHERE ${articlesTable.isNegative} = true)`,
+        selfPRCount: sql<number>`COUNT(*) FILTER (WHERE ${articlesTable.isSelfPR} = true)`,
+      })
+      .from(articlesTable)
+      .where(where),
+    db
+      .select({ totalAllTime: sql<number>`COUNT(*)` })
+      .from(articlesTable),
+  ]);
 
   const totalArticles = Number(row?.totalArticles ?? 0);
   const negativeCount = Number(row?.negativeCount ?? 0);
   const selfPRCount = Number(row?.selfPRCount ?? 0);
+  const totalAllTime = Number(allTimeRow?.totalAllTime ?? 0);
 
   res.json({
     totalArticles,
     statisticalCount: totalArticles - negativeCount,
     selfPRCount,
     negativeCount,
+    totalAllTime,
   });
 });
 

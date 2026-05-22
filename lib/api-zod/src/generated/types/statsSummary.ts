@@ -11,4 +11,5 @@ export interface StatsSummary {
   statisticalCount: number;
   selfPRCount: number;
   negativeCount: number;
+  totalAllTime: number;
 }

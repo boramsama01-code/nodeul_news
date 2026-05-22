@@ -498,6 +498,7 @@ components:
         - statisticalCount
         - selfPRCount
         - negativeCount
+        - totalAllTime
       properties:
         totalArticles:
           type: integer
@@ -506,6 +507,8 @@ components:
         selfPRCount:
           type: integer
         negativeCount:
+          type: integer
+        totalAllTime:
           type: integer
 
     TopMediaItem:

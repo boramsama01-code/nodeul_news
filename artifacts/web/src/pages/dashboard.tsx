@@ -136,6 +136,9 @@ export default function Dashboard() {
           loading={loadingSummary}
           icon={<Newspaper className="w-4 h-4" />}
           color="blue"
+          sub={summary && summary.totalAllTime !== summary.totalArticles
+            ? `DB 전체 누적 ${summary.totalAllTime.toLocaleString()}건`
+            : undefined}
         />
         <KpiCard
           title="부정 기사"
