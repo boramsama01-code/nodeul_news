@@ -1,7 +1,7 @@
 import app from "./app";
 import { logger } from "./lib/logger";
 import { db, crawlJobsTable, articlesTable } from "@workspace/db";
-import { eq, and, lt, count } from "drizzle-orm";
+import { eq, and, lt, count, desc } from "drizzle-orm";
 import { v4 as uuidv4 } from "uuid";
 import { runCrawlJob } from "./lib/crawlOrchestrator";
 import { loadRuntimeConfig } from "./lib/configStore";
@@ -46,46 +46,42 @@ async function recoverStaleJobs(): Promise<void> {
   }
 }
 
-// On startup: if DB is empty or last crawl was >23h ago, run a catch-up crawl
+// On startup: if DB has data and last crawl was >23h ago, run a yesterday catch-up crawl.
+// When DB is empty, do NOT auto-crawl — the user should trigger the first crawl manually.
 async function startupCrawlIfNeeded(): Promise<void> {
   try {
     const [{ total }] = await db.select({ total: count() }).from(articlesTable);
-    const isEmpty = total === 0;
 
-    // Find the most recent successful crawl job
-    const [lastJob] = await db
-      .select()
-      .from(crawlJobsTable)
-      .orderBy(crawlJobsTable.createdAt)
-      .limit(1);
-
-    const twentyThreeHoursAgo = new Date(Date.now() - 23 * 60 * 60 * 1000);
-    const needsCrawl =
-      isEmpty ||
-      !lastJob ||
-      lastJob.createdAt < twentyThreeHoursAgo;
-
-    if (!needsCrawl) {
-      logger.info({ total }, "DB has recent data, skipping startup crawl");
+    if (total === 0) {
+      logger.info("DB is empty — skipping auto startup crawl. Use the Crawl page to collect articles.");
       return;
     }
 
-    // Determine date range: if empty, crawl last 365 days; otherwise yesterday only
-    const endDate = new Date();
-    endDate.setDate(endDate.getDate() - 0);
-    const startDate = new Date();
-    if (isEmpty) {
-      startDate.setDate(startDate.getDate() - 365);
-      logger.info("DB is empty — running initial crawl for last 365 days");
-    } else {
-      startDate.setDate(startDate.getDate() - 1);
-      logger.info("Running catch-up crawl for yesterday");
+    // Find the most recent crawl job (fix: use desc so we get the latest, not oldest)
+    const [lastJob] = await db
+      .select()
+      .from(crawlJobsTable)
+      .orderBy(desc(crawlJobsTable.createdAt))
+      .limit(1);
+
+    const twentyThreeHoursAgo = new Date(Date.now() - 23 * 60 * 60 * 1000);
+    const needsCrawl = !lastJob || lastJob.createdAt < twentyThreeHoursAgo;
+
+    if (!needsCrawl) {
+      logger.info({ total, lastJobAt: lastJob?.createdAt }, "DB has recent data, skipping startup crawl");
+      return;
     }
 
+    // Catch-up crawl: yesterday only
+    const endDate = new Date();
+    const startDate = new Date();
+    startDate.setDate(startDate.getDate() - 1);
     const startStr = startDate.toISOString().split("T")[0];
     const endStr = endDate.toISOString().split("T")[0];
-    const jobId = uuidv4();
 
+    logger.info({ startStr, endStr }, "Running catch-up crawl for yesterday");
+
+    const jobId = uuidv4();
     await db.insert(crawlJobsTable).values({
       id: jobId,
       status: "running",
