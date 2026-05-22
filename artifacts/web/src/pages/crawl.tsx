@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from "react";
+import { useQuery } from "@tanstack/react-query";
 import {
   useStartCrawl,
   useStartBulkCrawl,
@@ -11,26 +12,29 @@ import { Input } from "@/components/ui/input";
 import { Progress } from "@/components/ui/progress";
 import { useToast } from "@/hooks/use-toast";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog";
-import { DownloadCloud, CheckCircle2, Clock, Info, Rss, Globe, CalendarRange } from "lucide-react";
+import { DownloadCloud, CheckCircle2, Clock, Info, Rss, Globe, CalendarRange, Search, AlertCircle, Settings } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
+import { Link } from "wouter";
 
-const SOURCE_GROUPS = [
-  {
-    icon: Rss,
-    label: "RSS 직접 수집 (63개 매체)",
-    desc: "연합뉴스, 조선·중앙·동아·한겨레 등 전국 주요 언론사 RSS 피드를 직접 구독. 수집된 전체 기사 중 \"노들섬\" 키워드 필터링 적용.",
-  },
-  {
-    icon: Globe,
-    label: "구글뉴스 RSS (74개 매체)",
-    desc: "지역지·전문지 등 자체 RSS가 없는 매체를 Google News RSS(site: 연산자)로 수집. 검색 단계에서 이미 \"노들섬\" 키워드 필터됨.",
-  },
-];
+interface SettingsResponse {
+  kakaoApiKey: { configured: boolean; masked: string | null };
+}
+
+async function fetchSettings(): Promise<SettingsResponse> {
+  const res = await fetch("/api/settings");
+  if (!res.ok) throw new Error("설정 조회 실패");
+  return res.json() as Promise<SettingsResponse>;
+}
 
 type JobMode = "manual" | "bulk";
 
 export default function Crawl() {
   const { toast } = useToast();
+
+  const { data: settings } = useQuery({
+    queryKey: ["settings"],
+    queryFn: fetchSettings,
+  });
 
   const today = new Date();
   const lastWeek = new Date();
@@ -138,7 +142,7 @@ export default function Crawl() {
     <div className="space-y-6 max-w-2xl mx-auto">
       <div>
         <h2 className="text-2xl font-bold tracking-tight">데이터 수집</h2>
-        <p className="text-sm text-muted-foreground mt-0.5">137개 언론사 RSS에서 노들섬 관련 기사를 병렬 수집합니다 · 매일 자정 자동 수집</p>
+        <p className="text-sm text-muted-foreground mt-0.5">네이버 API · 다음 API · 137개 언론사 RSS에서 노들섬 관련 기사를 병렬 수집합니다 · 매일 자정 자동 수집</p>
       </div>
 
       <div className="flex items-start gap-2.5 p-3.5 rounded-lg bg-accent/60 border border-accent text-accent-foreground text-sm">
@@ -148,6 +152,22 @@ export default function Crawl() {
           <span className="text-muted-foreground ml-1.5">— 매일 자정(KST 00:00)에 전날 기사를 자동으로 수집합니다. 수동 수집은 특정 기간이 필요할 때만 사용하세요.</span>
         </div>
       </div>
+
+      {settings && !settings.kakaoApiKey.configured && (
+        <div className="flex items-start gap-2.5 p-3.5 rounded-lg bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 text-amber-800 dark:text-amber-300 text-sm">
+          <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+          <div className="flex-1">
+            <span className="font-medium">다음(카카오) API 키 미설정</span>
+            <span className="text-amber-700 dark:text-amber-400 ml-1.5">— 현재 네이버 API + RSS만 수집됩니다. 다음뉴스도 수집하려면 카카오 REST API 키를 등록하세요.</span>
+          </div>
+          <Link href="/settings">
+            <Button variant="outline" size="sm" className="shrink-0 h-7 text-xs gap-1 border-amber-300 text-amber-800 hover:bg-amber-100 dark:border-amber-700 dark:text-amber-300">
+              <Settings className="w-3 h-3" />
+              설정
+            </Button>
+          </Link>
+        </div>
+      )}
 
       {/* Manual crawl */}
       <Card>
@@ -300,18 +320,71 @@ export default function Crawl() {
         </CardHeader>
         <CardContent className="p-0">
           <div className="divide-y">
-            {SOURCE_GROUPS.map((g) => {
-              const Icon = g.icon;
-              return (
-                <div key={g.label} className="px-4 py-4 flex items-start gap-3">
-                  <Icon className="w-4 h-4 mt-0.5 shrink-0 text-muted-foreground" />
-                  <div>
-                    <div className="text-sm font-medium">{g.label}</div>
-                    <div className="text-xs text-muted-foreground mt-0.5">{g.desc}</div>
-                  </div>
+            {/* Naver API */}
+            <div className="px-4 py-4 flex items-start gap-3">
+              <Search className="w-4 h-4 mt-0.5 shrink-0 text-muted-foreground" />
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="text-sm font-medium">네이버 뉴스 API</span>
+                  <Badge variant="secondary" className="text-xs px-1.5 py-0">API</Badge>
+                  <Badge variant="outline" className="text-xs px-1.5 py-0 text-green-600 border-green-300">연결됨</Badge>
                 </div>
-              );
-            })}
+                <div className="text-xs text-muted-foreground mt-0.5">
+                  네이버 검색 API로 "노들" 키워드 뉴스를 월별로 분할 수집. 최대 1,000건/월 수집하며 중복 제거 처리됨.
+                </div>
+              </div>
+            </div>
+            {/* Daum API */}
+            <div className="px-4 py-4 flex items-start gap-3">
+              <Search className="w-4 h-4 mt-0.5 shrink-0 text-muted-foreground" />
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="text-sm font-medium">다음 뉴스 API (카카오)</span>
+                  <Badge variant="secondary" className="text-xs px-1.5 py-0">API</Badge>
+                  {settings?.kakaoApiKey.configured ? (
+                    <Badge variant="outline" className="text-xs px-1.5 py-0 text-green-600 border-green-300">연결됨</Badge>
+                  ) : (
+                    <Badge variant="outline" className="text-xs px-1.5 py-0 text-orange-500 border-orange-300">키 미설정</Badge>
+                  )}
+                </div>
+                <div className="text-xs text-muted-foreground mt-0.5">
+                  카카오 검색 API(dapi.kakao.com)로 "노들" 키워드 뉴스를 페이지별 수집. 페이지당 50건, 최대 2,500건 수집 가능.
+                  {!settings?.kakaoApiKey.configured && (
+                    <Link href="/settings">
+                      <span className="ml-1 text-amber-600 underline cursor-pointer">설정에서 REST API 키 등록 →</span>
+                    </Link>
+                  )}
+                </div>
+              </div>
+            </div>
+            {/* RSS Direct */}
+            <div className="px-4 py-4 flex items-start gap-3">
+              <Rss className="w-4 h-4 mt-0.5 shrink-0 text-muted-foreground" />
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="text-sm font-medium">RSS 직접 수집 (63개 매체)</span>
+                  <Badge variant="secondary" className="text-xs px-1.5 py-0">RSS</Badge>
+                  <Badge variant="outline" className="text-xs px-1.5 py-0 text-green-600 border-green-300">연결됨</Badge>
+                </div>
+                <div className="text-xs text-muted-foreground mt-0.5">
+                  연합뉴스, 조선·중앙·동아·한겨레 등 전국 주요 언론사 RSS 피드를 직접 구독. 수집 후 "노들섬" 키워드 필터링 적용.
+                </div>
+              </div>
+            </div>
+            {/* Google News RSS */}
+            <div className="px-4 py-4 flex items-start gap-3">
+              <Globe className="w-4 h-4 mt-0.5 shrink-0 text-muted-foreground" />
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="text-sm font-medium">구글뉴스 RSS (74개 매체)</span>
+                  <Badge variant="secondary" className="text-xs px-1.5 py-0">RSS</Badge>
+                  <Badge variant="outline" className="text-xs px-1.5 py-0 text-green-600 border-green-300">연결됨</Badge>
+                </div>
+                <div className="text-xs text-muted-foreground mt-0.5">
+                  지역지·전문지 등 자체 RSS가 없는 매체를 Google News RSS(site: 연산자)로 수집. 검색 단계에서 이미 "노들섬" 키워드 필터됨.
+                </div>
+              </div>
+            </div>
           </div>
           <div className="px-4 py-3 border-t bg-muted/30">
             <p className="text-xs text-muted-foreground">
