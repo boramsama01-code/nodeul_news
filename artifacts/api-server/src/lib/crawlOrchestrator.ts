@@ -7,7 +7,6 @@ import {
   isDuplicate,
   addToSet,
   isValidUrl,
-  ruleBasedSentiment,
   ArticleData,
 } from "./crawlerUtils";
 import { crawlAllSources, crawlNaverNews } from "./crawlerSources";
@@ -88,8 +87,7 @@ export async function runCrawlJob(
 
     addToSet(article.url, article.title, article.publishedAt, existingSet);
 
-    const isNegative =
-      article.isNegative || ruleBasedSentiment(article.title, article.content);
+    const isNegative = false; // 자동 판단 비활성화 — 수동으로만 설정
 
     try {
       await db.insert(articlesTable).values({

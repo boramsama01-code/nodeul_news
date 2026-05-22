@@ -7,35 +7,35 @@ import {
   isDuplicate,
   addToSet,
   isValidUrl,
-  ruleBasedSentiment,
   ArticleData,
 } from "./crawlerUtils";
 import { crawlAllSources, crawlNaverNews } from "./crawlerSources";
 
+// Return "YYYY-MM-DD" strings for each month boundary (no timezone conversion here;
+// crawlerSources applies KST internally when it parses these strings).
 function getMonthRanges(
   startDate: string,
   endDate: string,
 ): Array<{ start: string; end: string; label: string }> {
   const ranges: Array<{ start: string; end: string; label: string }> = [];
-  const start = new Date(startDate);
-  const end = new Date(endDate);
+  const start = new Date(startDate + "T00:00:00");
+  const end   = new Date(endDate   + "T00:00:00");
 
   let current = new Date(start.getFullYear(), start.getMonth(), 1);
 
   while (current <= end) {
     const monthStart = new Date(current);
-    const monthEnd = new Date(current.getFullYear(), current.getMonth() + 1, 0);
+    const monthEnd   = new Date(current.getFullYear(), current.getMonth() + 1, 0);
 
     const rangeStart = monthStart < start ? start : monthStart;
-    const rangeEnd = monthEnd > end ? end : monthEnd;
+    const rangeEnd   = monthEnd   > end   ? end   : monthEnd;
 
     const label = `${current.getFullYear()}년 ${current.getMonth() + 1}월`;
 
-    ranges.push({
-      start: rangeStart.toISOString().split("T")[0]!,
-      end: rangeEnd.toISOString().split("T")[0]!,
-      label,
-    });
+    const fmt = (d: Date) =>
+      `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+
+    ranges.push({ start: fmt(rangeStart), end: fmt(rangeEnd), label });
 
     current = new Date(current.getFullYear(), current.getMonth() + 1, 1);
   }
@@ -121,8 +121,7 @@ export async function runBulkCrawlJob(
 
       addToSet(article.url, article.title, article.publishedAt, existingSet);
 
-      const isNegative =
-        article.isNegative || ruleBasedSentiment(article.title, article.content);
+      const isNegative = false; // 자동 판단 비활성화 — 수동으로만 설정
 
       try {
         await db.insert(articlesTable).values({

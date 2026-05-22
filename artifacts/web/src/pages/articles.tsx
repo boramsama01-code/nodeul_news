@@ -20,7 +20,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
 import { useToast } from "@/hooks/use-toast";
-import { Trash2, Plus, ChevronLeft, ChevronRight, Loader2, ExternalLink } from "lucide-react";
+import { Trash2, Plus, ChevronLeft, ChevronRight, Loader2, ExternalLink, Download } from "lucide-react";
 
 const MONTHS = ["전체", "1월", "2월", "3월", "4월", "5월", "6월", "7월", "8월", "9월", "10월", "11월", "12월"];
 const PAGE_SIZE = 20;
@@ -48,6 +48,36 @@ export default function Articles() {
   const [filterSelfPR, setFilterSelfPR] = useState<boolean | undefined>(undefined);
   const [page, setPage] = useState(1);
   const [showAddModal, setShowAddModal] = useState(false);
+
+  const today = new Date().toISOString().split("T")[0]!;
+  const firstOfYear = `${new Date().getFullYear()}-01-01`;
+  const [exportStart, setExportStart] = useState(firstOfYear);
+  const [exportEnd, setExportEnd] = useState(today);
+  const [exporting, setExporting] = useState(false);
+
+  const handleExport = async () => {
+    setExporting(true);
+    try {
+      const params = new URLSearchParams();
+      if (exportStart) params.set("startDate", exportStart);
+      if (exportEnd) params.set("endDate", exportEnd);
+      const res = await fetch(`/api/articles/export?${params.toString()}`);
+      if (!res.ok) throw new Error("Export failed");
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      const cd = res.headers.get("content-disposition") ?? "";
+      const match = cd.match(/filename\*=UTF-8''(.+)/);
+      a.download = match ? decodeURIComponent(match[1]!) : "노들섬_언론보도.xlsx";
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch {
+      toast({ title: "다운로드 실패", variant: "destructive" });
+    } finally {
+      setExporting(false);
+    }
+  };
 
   const { data: yearsData } = useGetStatYears({
     query: { queryKey: getGetStatYearsQueryKey() },
@@ -112,6 +142,36 @@ export default function Articles() {
           <Plus className="w-4 h-4 mr-2" /> 수기 추가
         </Button>
       </div>
+
+      {/* Excel Export */}
+      <Card>
+        <CardContent className="pt-4 pb-3">
+          <div className="flex flex-wrap gap-3 items-end">
+            <div className="flex flex-col gap-1">
+              <Label className="text-xs text-muted-foreground">시작일</Label>
+              <Input
+                type="date"
+                className="h-8 w-40"
+                value={exportStart}
+                onChange={(e) => setExportStart(e.target.value)}
+              />
+            </div>
+            <div className="flex flex-col gap-1">
+              <Label className="text-xs text-muted-foreground">종료일</Label>
+              <Input
+                type="date"
+                className="h-8 w-40"
+                value={exportEnd}
+                onChange={(e) => setExportEnd(e.target.value)}
+              />
+            </div>
+            <Button size="sm" className="h-8 gap-1.5" onClick={handleExport} disabled={exporting}>
+              {exporting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Download className="w-3.5 h-3.5" />}
+              Excel 다운로드
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
 
       {/* Filter Bar */}
       <Card>

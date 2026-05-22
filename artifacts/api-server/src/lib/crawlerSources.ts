@@ -22,14 +22,17 @@ function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
   ]);
 }
 
+// Interpret a "YYYY-MM-DD" date string as KST (UTC+9) day boundaries
+function kstStart(dateStr: string): Date { return new Date(dateStr + "T00:00:00+09:00"); }
+function kstEnd(dateStr: string): Date   { return new Date(dateStr + "T23:59:59.999+09:00"); }
+
 async function crawlSource(
   source: NewsSource,
   startDate: string,
   endDate: string,
 ): Promise<ArticleData[]> {
-  const start = new Date(startDate);
-  const end = new Date(endDate);
-  end.setHours(23, 59, 59, 999);
+  const start = kstStart(startDate);
+  const end   = kstEnd(endDate);
 
   const results: ArticleData[] = [];
 
@@ -91,15 +94,8 @@ async function crawlSource(
 
 // ── 네이버 뉴스 검색 API ──────────────────────────────────────────────────
 // 쿼리당 최대 1000건 (100건 × 10페이지), 여러 키워드로 수집
-const NAVER_QUERIES = [
-  "노들섬",
-  "노들 예술섬",
-  "노들섬 공연",
-  "노들섬 축제",
-  "노들섬 개발",
-  "노들 예술",
-  "노들 공연",
-];
+// 단일 "노들" 쿼리로 최대한 넓게 수집 — isRelevant 필터에서 불필요 항목 제거
+const NAVER_QUERIES = ["노들"];
 
 interface NaverNewsItem {
   title: string;
@@ -140,8 +136,8 @@ async function fetchNaverNewsPage(
 // Split a date range into monthly chunks to bypass the 1,000-result-per-query cap
 function splitIntoMonths(startDate: string, endDate: string): Array<{ start: string; end: string }> {
   const ranges: Array<{ start: string; end: string }> = [];
-  const globalStart = new Date(startDate);
-  const globalEnd = new Date(endDate);
+  const globalStart = kstStart(startDate);
+  const globalEnd   = kstEnd(endDate);
 
   let cursor = new Date(globalStart.getFullYear(), globalStart.getMonth(), 1);
   while (cursor <= globalEnd) {
@@ -163,9 +159,8 @@ async function crawlNaverQueryForMonth(
   clientId: string,
   clientSecret: string,
 ): Promise<ArticleData[]> {
-  const start = new Date(startDate);
-  const end = new Date(endDate);
-  end.setHours(23, 59, 59, 999);
+  const start = kstStart(startDate);
+  const end   = kstEnd(endDate);
 
   const results: ArticleData[] = [];
   const display = 100;
