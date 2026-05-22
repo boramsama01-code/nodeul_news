@@ -17,6 +17,7 @@ export function isRelevant(title: string, content: string): boolean {
       "노들역", "노들로1", "노들로2", "노들로3", "노들로4", "노들로5",
       "노들로6", "노들로7", "노들로8", "노들로9", "노들로0",
       "노들나루공원", "노들나루역",
+      "노들장애인야학", "노들강변",
     ];
     const hasExclusion = exclusionPatterns.some((e) => text.includes(e));
     return !hasExclusion;

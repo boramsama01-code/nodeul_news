@@ -97,6 +97,8 @@ const NAVER_QUERIES = [
   "노들섬 공연",
   "노들섬 축제",
   "노들섬 개발",
+  "노들 예술",
+  "노들 공연",
 ];
 
 interface NaverNewsItem {
