@@ -96,7 +96,7 @@ async function crawlSource(
 // 쿼리당 최대 1000건 (100건 × 10페이지), 여러 키워드로 수집
 // "노들섬"·"노들 예술섬" 두 쿼리로 수집 — 광범위한 "노들" 단어는 무관 기사가
 // 수천 건 포함되어 1000건 한도를 금방 채우므로 제외한다
-const NAVER_QUERIES = ["노들섬", "노들 예술섬"];
+const NAVER_QUERIES = ["노들섬", "노들 예술섬", "노들 예술"];
 
 interface NaverNewsItem {
   title: string;
@@ -381,5 +381,137 @@ export async function crawlDaumNews(
   }
 
   logger.info({ total: allResults.length }, "Daum News crawl complete");
+  return allResults;
+}
+
+// ── 네이버 뉴스 웹 검색 (날짜 필터 직접 지정) ─────────────────────────────
+// openapi.naver.com 은 최대 1,000건 한도로 과거 기사를 놓치는 구조적 한계가 있다.
+// search.naver.com 의 날짜 필터(pd=3, ds/de)를 직접 스크래핑해 임의 기간을 커버한다.
+// 파싱 기반: data-url 속성(기사 URL) + 앞부분 <a href> 텍스트(제목) + YYYY.MM.DD. 날짜
+const NAVER_WEB_QUERIES = ["노들섬", "노들 예술섬", "노들 예술"];
+const NAVER_WEB_HEADERS = {
+  "User-Agent":
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+  "Accept-Language": "ko-KR,ko;q=0.9,en;q=0.8",
+  Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+  Referer: "https://www.naver.com/",
+};
+
+function extractNaverWebArticles(
+  html: string,
+): Array<{ url: string; title: string; summary: string; dateStr: string }> {
+  const articles: Array<{ url: string; title: string; summary: string; dateStr: string }> = [];
+
+  // Each article has a data-url attribute with the original article URL
+  const dataUrlRegex = /data-url="(https?:\/\/[^"]+)"/g;
+  let m: RegExpExecArray | null;
+
+  while ((m = dataUrlRegex.exec(html)) !== null) {
+    const rawUrl = m[1]!;
+    const url = rawUrl.replace(/&amp;/g, "&");
+    const dataUrlPos = m.index;
+
+    // Date: last YYYY.MM.DD. pattern in the 2500 chars before data-url
+    const lookback = html.slice(Math.max(0, dataUrlPos - 2500), dataUrlPos);
+    const dateMatches = [...lookback.matchAll(/(\d{4})\.(\d{2})\.(\d{2})\./g)];
+    if (!dateMatches.length) continue;
+    const d = dateMatches[dateMatches.length - 1]!;
+    const dateStr = `${d[1]}-${d[2]}-${d[3]}`;
+
+    // Title + summary: first two <a href="URL"> text contents in whole HTML
+    const titleMatches: string[] = [];
+    let searchPos = 0;
+    // Try both raw (with &amp;) and decoded URL forms
+    const candidates = rawUrl === url ? [url] : [url, rawUrl];
+    while (titleMatches.length < 2 && searchPos < html.length) {
+      let aIdx = -1;
+      let foundCandidate = "";
+      for (const cand of candidates) {
+        const pos = html.indexOf(`href="${cand}"`, searchPos);
+        if (pos !== -1 && (aIdx === -1 || pos < aIdx)) {
+          aIdx = pos;
+          foundCandidate = cand;
+        }
+      }
+      if (aIdx === -1) break;
+      const closeAngle = html.indexOf(">", aIdx);
+      const closeA     = html.indexOf("</a>", closeAngle + 1);
+      if (closeAngle === -1 || closeA === -1) break;
+      const text = html.slice(closeAngle + 1, closeA).replace(/<[^>]+>/g, "").trim();
+      if (text.length >= 3) titleMatches.push(text);
+      searchPos = closeA + 1;
+    }
+
+    const title   = titleMatches[0] ?? "";
+    const summary = titleMatches[1] ?? "";
+    if (!title) continue;
+
+    articles.push({ url, title, summary, dateStr });
+  }
+
+  return articles;
+}
+
+export async function crawlNaverWebSearch(
+  startDate: string,
+  endDate: string,
+): Promise<ArticleData[]> {
+  const allResults: ArticleData[] = [];
+  const ds = startDate.replace(/-/g, ".");
+  const de = endDate.replace(/-/g, ".");
+
+  for (const query of NAVER_WEB_QUERIES) {
+    let emptyPages = 0;
+
+    for (let start = 1; start <= 1000; start += 10) {
+      try {
+        const resp = await axios.get<string>("https://search.naver.com/search.naver", {
+          params: { where: "news", query, sort: 1, pd: 3, ds, de, start },
+          headers: NAVER_WEB_HEADERS,
+          timeout: 12000,
+        });
+
+        const articles = extractNaverWebArticles(resp.data as string);
+
+        if (articles.length === 0) {
+          emptyPages++;
+          if (emptyPages >= 2) break;
+          continue;
+        }
+        emptyPages = 0;
+
+        for (const article of articles) {
+          if (!isRelevant(article.title, article.summary)) continue;
+          const pubDate = new Date(`${article.dateStr}T12:00:00+09:00`);
+          if (isNaN(pubDate.getTime())) continue;
+          const kstStart_ = kstStart(startDate);
+          const kstEnd_   = kstEnd(endDate);
+          if (pubDate < kstStart_ || pubDate > kstEnd_) continue;
+
+          allResults.push({
+            title:       article.title,
+            content:     article.summary,
+            url:         article.url,
+            publishedAt: pubDate,
+            mediaName:   resolveMediaName(article.url),
+            isNegative:  false,
+            isSelfPR:    false,
+            source:      "naver_web",
+          });
+        }
+
+        await new Promise((r) => setTimeout(r, 300));
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        logger.warn({ query, start }, `Naver web search error: ${msg}`);
+        break;
+      }
+    }
+
+    logger.debug({ query, ds, de, running: allResults.length }, "Naver web: query done");
+    await new Promise((r) => setTimeout(r, 500));
+  }
+
+  logger.info({ total: allResults.length }, "Naver web search crawl complete");
   return allResults;
 }

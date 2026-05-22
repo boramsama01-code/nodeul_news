@@ -9,7 +9,7 @@ import {
   isValidUrl,
   ArticleData,
 } from "./crawlerUtils";
-import { crawlAllSources, crawlNaverNews, crawlDaumNews } from "./crawlerSources";
+import { crawlAllSources, crawlNaverNews, crawlDaumNews, crawlNaverWebSearch } from "./crawlerSources";
 
 async function loadExistingSet(): Promise<Set<string>> {
   const existingSet = new Set<string>();
@@ -46,27 +46,24 @@ export async function runCrawlJob(
 
   logger.info({ jobId }, "Starting parallel crawl: Naver API + Daum API + RSS sources");
 
-  const [naverArticles, daumArticles, rssArticles] = await Promise.allSettled([
+  const [naverApiRes, naverWebRes, daumRes, rssRes] = await Promise.allSettled([
     crawlNaverNews(startDate, endDate),
+    crawlNaverWebSearch(startDate, endDate),
     crawlDaumNews(startDate, endDate),
     crawlAllSources(startDate, endDate),
   ]);
 
-  const naverResults = naverArticles.status === "fulfilled" ? naverArticles.value : [];
-  const daumResults  = daumArticles.status  === "fulfilled" ? daumArticles.value  : [];
-  const rssResults   = rssArticles.status   === "fulfilled" ? rssArticles.value   : [];
+  const naverApiResults = naverApiRes.status === "fulfilled" ? naverApiRes.value : [];
+  const naverWebResults = naverWebRes.status === "fulfilled" ? naverWebRes.value : [];
+  const daumResults     = daumRes.status     === "fulfilled" ? daumRes.value     : [];
+  const rssResults      = rssRes.status      === "fulfilled" ? rssRes.value      : [];
 
-  if (naverArticles.status === "rejected") {
-    logger.error({ err: naverArticles.reason, jobId }, "Naver crawl failed");
-  }
-  if (daumArticles.status === "rejected") {
-    logger.error({ err: daumArticles.reason, jobId }, "Daum crawl failed");
-  }
-  if (rssArticles.status === "rejected") {
-    logger.error({ err: rssArticles.reason, jobId }, "RSS crawl failed");
-  }
+  if (naverApiRes.status === "rejected") logger.error({ err: naverApiRes.reason, jobId }, "Naver API crawl failed");
+  if (naverWebRes.status === "rejected") logger.error({ err: naverWebRes.reason, jobId }, "Naver web crawl failed");
+  if (daumRes.status     === "rejected") logger.error({ err: daumRes.reason,     jobId }, "Daum crawl failed");
+  if (rssRes.status      === "rejected") logger.error({ err: rssRes.reason,      jobId }, "RSS crawl failed");
 
-  const articles: ArticleData[] = [...naverResults, ...daumResults, ...rssResults];
+  const articles: ArticleData[] = [...naverApiResults, ...naverWebResults, ...daumResults, ...rssResults];
 
   await db
     .update(crawlJobsTable)
@@ -77,7 +74,7 @@ export async function runCrawlJob(
     .where(eq(crawlJobsTable.id, jobId));
 
   logger.info(
-    { jobId, naver: naverResults.length, rss: rssResults.length, total: articles.length },
+    { jobId, naverApi: naverApiResults.length, naverWeb: naverWebResults.length, daum: daumResults.length, rss: rssResults.length, total: articles.length },
     "Crawl complete, deduplicating",
   );
 
