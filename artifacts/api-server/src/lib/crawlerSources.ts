@@ -137,6 +137,90 @@ async function fetchNaverNewsPage(
   return response.data.items || [];
 }
 
+// Split a date range into monthly chunks to bypass the 1,000-result-per-query cap
+function splitIntoMonths(startDate: string, endDate: string): Array<{ start: string; end: string }> {
+  const ranges: Array<{ start: string; end: string }> = [];
+  const globalStart = new Date(startDate);
+  const globalEnd = new Date(endDate);
+
+  let cursor = new Date(globalStart.getFullYear(), globalStart.getMonth(), 1);
+  while (cursor <= globalEnd) {
+    const monthEnd = new Date(cursor.getFullYear(), cursor.getMonth() + 1, 0);
+    ranges.push({
+      start: (cursor < globalStart ? globalStart : cursor).toISOString().split("T")[0]!,
+      end:   (monthEnd > globalEnd ? globalEnd : monthEnd).toISOString().split("T")[0]!,
+    });
+    cursor = new Date(cursor.getFullYear(), cursor.getMonth() + 1, 1);
+  }
+  return ranges;
+}
+
+// Fetch all pages for one query over one month-sized date range
+async function crawlNaverQueryForMonth(
+  query: string,
+  startDate: string,
+  endDate: string,
+  clientId: string,
+  clientSecret: string,
+): Promise<ArticleData[]> {
+  const start = new Date(startDate);
+  const end = new Date(endDate);
+  end.setHours(23, 59, 59, 999);
+
+  const results: ArticleData[] = [];
+  const display = 100;
+
+  for (let pageStart = 1; pageStart <= 1000; pageStart += display) {
+    try {
+      const items = await fetchNaverNewsPage(query, pageStart, display, clientId, clientSecret);
+      if (items.length === 0) break;
+
+      let inRangeCount = 0;
+      for (const item of items) {
+        const title = stripHtml(item.title);
+        const content = stripHtml(item.description);
+        const url = item.originallink || item.link;
+
+        if (!title || !isValidUrl(url)) continue;
+        if (!isRelevant(title, content)) continue;
+
+        const pubDate = new Date(item.pubDate);
+        if (isNaN(pubDate.getTime())) continue;
+        if (pubDate < start || pubDate > end) continue;
+
+        inRangeCount++;
+        results.push({
+          title,
+          content,
+          url,
+          publishedAt: pubDate,
+          mediaName: resolveMediaName(url),
+          isNegative: false,
+          isSelfPR: false,
+          source: "naver_api",
+        });
+      }
+
+      // Once ALL items on a page are older than our start date, stop paginating
+      // (API returns newest-first so this is reliable)
+      const oldestOnPage = items[items.length - 1];
+      if (oldestOnPage) {
+        const oldestDate = new Date(oldestOnPage.pubDate);
+        if (!isNaN(oldestDate.getTime()) && oldestDate < start && inRangeCount === 0) break;
+      }
+
+      if (items.length < display) break;
+      await new Promise((r) => setTimeout(r, 150));
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      logger.warn({ query, pageStart }, `Naver API error: ${msg}`);
+      break;
+    }
+  }
+
+  return results;
+}
+
 export async function crawlNaverNews(
   startDate: string,
   endDate: string,
@@ -149,76 +233,24 @@ export async function crawlNaverNews(
     return [];
   }
 
-  const start = new Date(startDate);
-  const end = new Date(endDate);
-  end.setHours(23, 59, 59, 999);
+  // Split into monthly chunks so each chunk stays well under the 1,000-item API cap.
+  // A single "노들섬" query for 5 months can exceed 1,000 results, causing the API
+  // to silently drop the oldest articles. Monthly splitting prevents this.
+  const months = splitIntoMonths(startDate, endDate);
+  logger.info({ months: months.length, startDate, endDate }, "Naver crawl: monthly split");
 
-  const results: ArticleData[] = [];
+  const allResults: ArticleData[] = [];
 
-  for (const query of NAVER_QUERIES) {
-    let pageStart = 1;
-    const display = 100;
-    let consecutiveOutOfRange = 0;
-
-    while (pageStart <= 1000) {
-      try {
-        const items = await fetchNaverNewsPage(query, pageStart, display, clientId, clientSecret);
-        if (items.length === 0) break;
-
-        let inRangeCount = 0;
-        for (const item of items) {
-          const title = stripHtml(item.title);
-          const content = stripHtml(item.description);
-          const url = item.originallink || item.link;
-
-          if (!title || !isValidUrl(url)) continue;
-          if (!isRelevant(title, content)) continue;
-
-          const pubDate = new Date(item.pubDate);
-          if (isNaN(pubDate.getTime())) continue;
-
-          if (pubDate < start || pubDate > end) continue;
-
-          inRangeCount++;
-          const mediaName = resolveMediaName(url);
-
-          results.push({
-            title,
-            content,
-            url,
-            publishedAt: pubDate,
-            mediaName,
-            isNegative: false,
-            isSelfPR: false,
-            source: "naver_api",
-          });
-        }
-
-        // If this entire page had nothing in range and articles are getting older, stop
-        if (inRangeCount === 0) {
-          consecutiveOutOfRange++;
-          if (consecutiveOutOfRange >= 2) break;
-        } else {
-          consecutiveOutOfRange = 0;
-        }
-
-        if (items.length < display) break;
-        pageStart += display;
-
-        // Small delay to be polite
-        await new Promise((r) => setTimeout(r, 200));
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        logger.warn({ query, pageStart }, `Naver API error: ${msg}`);
-        break;
-      }
+  for (const month of months) {
+    for (const query of NAVER_QUERIES) {
+      const items = await crawlNaverQueryForMonth(query, month.start, month.end, clientId, clientSecret);
+      allResults.push(...items);
+      logger.debug({ query, month: month.start, found: items.length }, "Naver month+query done");
     }
-
-    logger.debug({ query, found: results.length }, "Naver query complete");
   }
 
-  logger.info({ total: results.length }, "Naver News crawl complete");
-  return results;
+  logger.info({ total: allResults.length }, "Naver News crawl complete");
+  return allResults;
 }
 
 export async function crawlAllSources(
