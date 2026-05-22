@@ -556,6 +556,92 @@ export const useAnalyzeArticle = <
 };
 
 /**
+ * @summary Start a bulk crawl job (month-by-month)
+ */
+export const getStartBulkCrawlUrl = () => {
+  return `/api/crawl/bulk-start`;
+};
+
+export const startBulkCrawl = async (
+  crawlJobInput: CrawlJobInput,
+  options?: RequestInit,
+): Promise<CrawlStartResponse> => {
+  return customFetch<CrawlStartResponse>(getStartBulkCrawlUrl(), {
+    ...options,
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...options?.headers },
+    body: JSON.stringify(crawlJobInput),
+  });
+};
+
+export const getStartBulkCrawlMutationOptions = <
+  TError = ErrorType<unknown>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof startBulkCrawl>>,
+    TError,
+    { data: BodyType<CrawlJobInput> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof startBulkCrawl>>,
+  TError,
+  { data: BodyType<CrawlJobInput> },
+  TContext
+> => {
+  const mutationKey = ["startBulkCrawl"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof startBulkCrawl>>,
+    { data: BodyType<CrawlJobInput> }
+  > = (props) => {
+    const { data } = props ?? {};
+
+    return startBulkCrawl(data, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type StartBulkCrawlMutationResult = NonNullable<
+  Awaited<ReturnType<typeof startBulkCrawl>>
+>;
+export type StartBulkCrawlMutationBody = BodyType<CrawlJobInput>;
+export type StartBulkCrawlMutationError = ErrorType<unknown>;
+
+/**
+ * @summary Start a bulk crawl job (month-by-month)
+ */
+export const useStartBulkCrawl = <
+  TError = ErrorType<unknown>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof startBulkCrawl>>,
+    TError,
+    { data: BodyType<CrawlJobInput> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof startBulkCrawl>>,
+  TError,
+  { data: BodyType<CrawlJobInput> },
+  TContext
+> => {
+  return useMutation(getStartBulkCrawlMutationOptions(options));
+};
+
+/**
  * @summary Start a crawl job
  */
 export const getStartCrawlUrl = () => {

@@ -155,6 +155,25 @@ paths:
         "404":
           description: Not found
 
+  /crawl/bulk-start:
+    post:
+      operationId: startBulkCrawl
+      tags: [crawl]
+      summary: Start a bulk crawl job (month-by-month)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CrawlJobInput"
+      responses:
+        "200":
+          description: Bulk crawl started
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CrawlStartResponse"
+
   /crawl/start:
     post:
       operationId: startCrawl

@@ -118,6 +118,18 @@ export const AnalyzeArticleResponse = zod.object({
 });
 
 /**
+ * @summary Start a bulk crawl job (month-by-month)
+ */
+export const StartBulkCrawlBody = zod.object({
+  startDate: zod.string(),
+  endDate: zod.string(),
+});
+
+export const StartBulkCrawlResponse = zod.object({
+  jobId: zod.string(),
+});
+
+/**
  * @summary Start a crawl job
  */
 export const StartCrawlBody = zod.object({
