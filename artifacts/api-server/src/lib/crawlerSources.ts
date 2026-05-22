@@ -265,3 +265,111 @@ export async function crawlAllSources(
 
   return all;
 }
+
+// ── Daum(Kakao) 뉴스 검색 API ────────────────────────────────────────────
+// 한 번 요청당 최대 50건, page 파라미터로 페이지네이션
+interface KakaoNewsDoc {
+  title: string;
+  contents: string;
+  url: string;
+  datetime: string; // ISO 8601
+  publisher?: string;
+}
+
+interface KakaoNewsResponse {
+  documents: KakaoNewsDoc[];
+  meta: { total_count: number; pageable_count: number; is_end: boolean };
+}
+
+async function crawlDaumForMonth(
+  query: string,
+  startDate: string,
+  endDate: string,
+  apiKey: string,
+): Promise<ArticleData[]> {
+  const start = kstStart(startDate);
+  const end   = kstEnd(endDate);
+  const results: ArticleData[] = [];
+  const size = 50;
+
+  for (let page = 1; page <= 50; page++) {
+    try {
+      const resp = await axios.get<KakaoNewsResponse>(
+        "https://dapi.kakao.com/v2/search/news",
+        {
+          headers: { Authorization: `KakaoAK ${apiKey}` },
+          params: { query, sort: "recency", page, size },
+          timeout: TIMEOUT_MS,
+        },
+      );
+
+      const { documents, meta } = resp.data;
+      if (!documents || documents.length === 0) break;
+
+      let anyInRange = false;
+      for (const doc of documents) {
+        const pubDate = new Date(doc.datetime);
+        if (isNaN(pubDate.getTime())) continue;
+        if (pubDate > end) continue;   // 아직 미래 기사 — 스킵
+        if (pubDate < start) {
+          // 이미 범위 이전 — 이후 페이지는 더 오래됨, 조기 종료
+          anyInRange = false;
+          break;
+        }
+        anyInRange = true;
+
+        const title   = stripHtml(doc.title);
+        const content = stripHtml(doc.contents);
+        const url     = doc.url;
+
+        if (!title || !isValidUrl(url)) continue;
+        if (!isRelevant(title, content)) continue;
+
+        const publisher = doc.publisher ?? "";
+        results.push({
+          title,
+          content,
+          url,
+          publishedAt: pubDate,
+          mediaName: resolveMediaName(url, publisher),
+          isNegative: false,
+          isSelfPR: false,
+          source: "daum_api",
+        });
+      }
+
+      if (meta.is_end || !anyInRange) break;
+      await new Promise((r) => setTimeout(r, 150));
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      logger.warn({ query, page }, `Daum API error: ${msg}`);
+      break;
+    }
+  }
+
+  return results;
+}
+
+export async function crawlDaumNews(
+  startDate: string,
+  endDate: string,
+): Promise<ArticleData[]> {
+  const apiKey = process.env.KAKAO_REST_API_KEY;
+  if (!apiKey) {
+    logger.warn("KAKAO_REST_API_KEY not set — skipping Daum News crawl");
+    return [];
+  }
+
+  const months = splitIntoMonths(startDate, endDate);
+  logger.info({ months: months.length, startDate, endDate }, "Daum crawl: monthly split");
+
+  const allResults: ArticleData[] = [];
+  for (const month of months) {
+    const items = await crawlDaumForMonth("노들", month.start, month.end, apiKey);
+    allResults.push(...items);
+    logger.debug({ month: month.start, found: items.length }, "Daum month done");
+  }
+
+  logger.info({ total: allResults.length }, "Daum News crawl complete");
+  return allResults;
+}

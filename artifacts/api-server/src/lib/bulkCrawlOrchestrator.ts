@@ -98,7 +98,7 @@ export async function runBulkCrawlJob(
     ]);
 
     const naverResults = naverArticles.status === "fulfilled" ? naverArticles.value : [];
-    const rssResults = rssArticles.status === "fulfilled" ? rssArticles.value : [];
+    const rssResults   = rssArticles.status   === "fulfilled" ? rssArticles.value   : [];
 
     if (naverArticles.status === "rejected") {
       logger.error({ err: naverArticles.reason, jobId, month: month.label }, "Naver crawl failed for month");

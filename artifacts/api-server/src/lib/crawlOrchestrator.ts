@@ -46,14 +46,13 @@ export async function runCrawlJob(
 
   logger.info({ jobId }, "Starting parallel crawl: Naver API + RSS sources");
 
-  // Run Naver API and RSS sources in parallel
   const [naverArticles, rssArticles] = await Promise.allSettled([
     crawlNaverNews(startDate, endDate),
     crawlAllSources(startDate, endDate),
   ]);
 
   const naverResults = naverArticles.status === "fulfilled" ? naverArticles.value : [];
-  const rssResults = rssArticles.status === "fulfilled" ? rssArticles.value : [];
+  const rssResults   = rssArticles.status   === "fulfilled" ? rssArticles.value   : [];
 
   if (naverArticles.status === "rejected") {
     logger.error({ err: naverArticles.reason, jobId }, "Naver crawl failed");
