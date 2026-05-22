@@ -94,8 +94,9 @@ async function crawlSource(
 
 // ── 네이버 뉴스 검색 API ──────────────────────────────────────────────────
 // 쿼리당 최대 1000건 (100건 × 10페이지), 여러 키워드로 수집
-// 단일 "노들" 쿼리로 최대한 넓게 수집 — isRelevant 필터에서 불필요 항목 제거
-const NAVER_QUERIES = ["노들"];
+// "노들섬"·"노들 예술섬" 두 쿼리로 수집 — 광범위한 "노들" 단어는 무관 기사가
+// 수천 건 포함되어 1000건 한도를 금방 채우므로 제외한다
+const NAVER_QUERIES = ["노들섬", "노들 예술섬"];
 
 interface NaverNewsItem {
   title: string;
@@ -133,20 +134,29 @@ async function fetchNaverNewsPage(
   return response.data.items || [];
 }
 
-// Split a date range into monthly chunks to bypass the 1,000-result-per-query cap
+// Split a date range into monthly chunks to bypass the 1,000-result-per-query cap.
+// Operates purely on YYYY-MM-DD strings to avoid UTC↔KST timezone confusion.
 function splitIntoMonths(startDate: string, endDate: string): Array<{ start: string; end: string }> {
   const ranges: Array<{ start: string; end: string }> = [];
-  const globalStart = kstStart(startDate);
-  const globalEnd   = kstEnd(endDate);
+  const [sy, sm] = startDate.split("-").map(Number) as [number, number, number];
+  const [ey, em] = endDate.split("-").map(Number)   as [number, number, number];
 
-  let cursor = new Date(globalStart.getFullYear(), globalStart.getMonth(), 1);
-  while (cursor <= globalEnd) {
-    const monthEnd = new Date(cursor.getFullYear(), cursor.getMonth() + 1, 0);
+  let year = sy;
+  let month = sm; // 1-indexed
+
+  while (year < ey || (year === ey && month <= em)) {
+    const lastDay = new Date(year, month, 0).getDate(); // last day of this month
+    const pad = (n: number) => String(n).padStart(2, "0");
+    const monthStart = `${year}-${pad(month)}-01`;
+    const monthEnd   = `${year}-${pad(month)}-${pad(lastDay)}`;
+
     ranges.push({
-      start: (cursor < globalStart ? globalStart : cursor).toISOString().split("T")[0]!,
-      end:   (monthEnd > globalEnd ? globalEnd : monthEnd).toISOString().split("T")[0]!,
+      start: (year === sy && month === sm) ? startDate : monthStart,
+      end:   (year === ey && month === em) ? endDate   : monthEnd,
     });
-    cursor = new Date(cursor.getFullYear(), cursor.getMonth() + 1, 1);
+
+    month++;
+    if (month > 12) { month = 1; year++; }
   }
   return ranges;
 }
@@ -365,7 +375,7 @@ export async function crawlDaumNews(
 
   const allResults: ArticleData[] = [];
   for (const month of months) {
-    const items = await crawlDaumForMonth("노들", month.start, month.end, apiKey);
+    const items = await crawlDaumForMonth("노들섬", month.start, month.end, apiKey);
     allResults.push(...items);
     logger.debug({ month: month.start, found: items.length }, "Daum month done");
   }
