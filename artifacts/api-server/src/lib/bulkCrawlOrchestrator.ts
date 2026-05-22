@@ -9,7 +9,7 @@ import {
   isValidUrl,
   ArticleData,
 } from "./crawlerUtils";
-import { crawlAllSources, crawlNaverNews } from "./crawlerSources";
+import { crawlAllSources, crawlNaverNews, crawlDaumNews } from "./crawlerSources";
 
 // Return "YYYY-MM-DD" strings for each month boundary (no timezone conversion here;
 // crawlerSources applies KST internally when it parses these strings).
@@ -92,22 +92,27 @@ export async function runBulkCrawlJob(
 
     logger.info({ jobId, month: month.label, start: month.start, end: month.end }, "Bulk crawl: processing month");
 
-    const [naverArticles, rssArticles] = await Promise.allSettled([
+    const [naverArticles, daumArticles, rssArticles] = await Promise.allSettled([
       crawlNaverNews(month.start, month.end),
+      crawlDaumNews(month.start, month.end),
       crawlAllSources(month.start, month.end),
     ]);
 
     const naverResults = naverArticles.status === "fulfilled" ? naverArticles.value : [];
+    const daumResults  = daumArticles.status  === "fulfilled" ? daumArticles.value  : [];
     const rssResults   = rssArticles.status   === "fulfilled" ? rssArticles.value   : [];
 
     if (naverArticles.status === "rejected") {
       logger.error({ err: naverArticles.reason, jobId, month: month.label }, "Naver crawl failed for month");
     }
+    if (daumArticles.status === "rejected") {
+      logger.error({ err: daumArticles.reason, jobId, month: month.label }, "Daum crawl failed for month");
+    }
     if (rssArticles.status === "rejected") {
       logger.error({ err: rssArticles.reason, jobId, month: month.label }, "RSS crawl failed for month");
     }
 
-    const articles: ArticleData[] = [...naverResults, ...rssResults];
+    const articles: ArticleData[] = [...naverResults, ...daumResults, ...rssResults];
 
     logger.info({ jobId, month: month.label, count: articles.length }, "Bulk crawl: deduplicating month");
 

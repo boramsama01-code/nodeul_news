@@ -4,6 +4,10 @@ import { db, crawlJobsTable, articlesTable } from "@workspace/db";
 import { eq, and, lt, count } from "drizzle-orm";
 import { v4 as uuidv4 } from "uuid";
 import { runCrawlJob } from "./lib/crawlOrchestrator";
+import { loadRuntimeConfig } from "./lib/configStore";
+
+// Load persisted runtime config (e.g. Kakao API key) before anything else
+loadRuntimeConfig();
 
 const rawPort = process.env["PORT"];
 

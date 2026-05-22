@@ -1,6 +1,6 @@
 import React, { useState } from "react";
 import { Link, useLocation } from "wouter";
-import { LayoutDashboard, DownloadCloud, FileText, BarChart2, Menu, Newspaper } from "lucide-react";
+import { LayoutDashboard, DownloadCloud, FileText, BarChart2, Menu, Newspaper, Settings } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet";
 
@@ -13,6 +13,7 @@ const navItems = [
   { href: "/crawl", label: "데이터 수집", icon: DownloadCloud },
   { href: "/articles", label: "기사 목록", icon: FileText },
   { href: "/stats", label: "통계", icon: BarChart2 },
+  { href: "/settings", label: "설정", icon: Settings },
 ];
 
 function Logo() {
