@@ -292,6 +292,7 @@ async function crawlDaumWebForMonth(
   endDate: string,
 ): Promise<ArticleData[]> {
   const results: ArticleData[] = [];
+  const seenUrls = new Set<string>(); // de-dup within this month's crawl
   const start = kstStart(startDate);
   const end   = kstEnd(endDate);
 
@@ -312,6 +313,7 @@ async function crawlDaumWebForMonth(
       if (items.length === 0) break;
 
       let outOfRangeCount = 0;
+      let newOnPage = 0; // count items we haven't seen before
 
       items.each((_, el) => {
         const a     = $(el).find("a").first();
@@ -319,6 +321,11 @@ async function crawlDaumWebForMonth(
         const title = a.text().trim();
 
         if (!url || !title || !isValidUrl(url)) return;
+
+        // Detect pagination returning same results (Daum sometimes repeats page 1 for all pages)
+        if (seenUrls.has(url)) return;
+        newOnPage++;
+        seenUrls.add(url);
 
         // Extract date from v.daum.net URL: /v/YYYYMMDDXXXXXXXXX
         const dateM = url.match(/\/v\/(\d{4})(\d{2})(\d{2})\d+/);
@@ -349,7 +356,9 @@ async function crawlDaumWebForMonth(
         });
       });
 
-      // If most items are already before our start date, stop paginating
+      // Stop if this page returned no new URLs (pagination stalled — same results repeating)
+      if (newOnPage === 0) break;
+      // Stop if most items are before the start date
       if (outOfRangeCount >= items.length * 0.7) break;
 
       await new Promise((r) => setTimeout(r, 300));
@@ -397,6 +406,8 @@ const NAVER_WEB_HEADERS = {
 };
 
 // Parse Naver date text (relative or absolute) → YYYY-MM-DD
+// Naver uses: "N분 전" / "N시간 전" (today), "N일 전" (1-6 days ago), "어제" (yesterday),
+// or absolute "YYYY.MM.DD" for older articles.
 function parseNaverDateText(text: string): string {
   // Absolute: "2026.05.25" or "2026.05.25."
   const absM = text.match(/(\d{4})\.(\d{2})\.(\d{2})/);
@@ -405,6 +416,8 @@ function parseNaverDateText(text: string): string {
   const now = new Date();
   const hoursM = text.match(/(\d+)시간 전/);
   if (hoursM) return new Date(now.getTime() - parseInt(hoursM[1]) * 3600_000).toISOString().slice(0, 10);
+  const daysM = text.match(/(\d+)일 전/);
+  if (daysM) return new Date(now.getTime() - parseInt(daysM[1]) * 86_400_000).toISOString().slice(0, 10);
   if (/\d+분 전|방금/.test(text) || text.includes("오늘")) return now.toISOString().slice(0, 10);
   if (text.includes("어제")) return new Date(now.getTime() - 86_400_000).toISOString().slice(0, 10);
   return "";
