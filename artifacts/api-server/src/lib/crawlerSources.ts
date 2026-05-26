@@ -396,59 +396,64 @@ const NAVER_WEB_HEADERS = {
   Referer: "https://www.naver.com/",
 };
 
+// Parse Naver date text (relative or absolute) → YYYY-MM-DD
+function parseNaverDateText(text: string): string {
+  // Absolute: "2026.05.25" or "2026.05.25."
+  const absM = text.match(/(\d{4})\.(\d{2})\.(\d{2})/);
+  if (absM) return `${absM[1]}-${absM[2]}-${absM[3]}`;
+  // Relative times
+  const now = new Date();
+  const hoursM = text.match(/(\d+)시간 전/);
+  if (hoursM) return new Date(now.getTime() - parseInt(hoursM[1]) * 3600_000).toISOString().slice(0, 10);
+  if (/\d+분 전|방금/.test(text) || text.includes("오늘")) return now.toISOString().slice(0, 10);
+  if (text.includes("어제")) return new Date(now.getTime() - 86_400_000).toISOString().slice(0, 10);
+  return "";
+}
+
+// Naver search HTML (2025+) uses sds-comps-* design system.
+// Article title links: <a href="ORIG_URL" … data-heatmap-target=".tit"><span …>TITLE</span></a>
+// Date: relative ("N시간 전") or absolute ("YYYY.MM.DD") in next 6000 chars after the title link.
 function extractNaverWebArticles(
   html: string,
 ): Array<{ url: string; title: string; summary: string; dateStr: string }> {
-  const articles: Array<{ url: string; title: string; summary: string; dateStr: string }> = [];
+  const $ = cheerio.load(html);
+  const results: Array<{ url: string; title: string; summary: string; dateStr: string }> = [];
+  const seen = new Set<string>();
+  let searchFrom = 0; // advance to avoid matching same URL twice
 
-  // Each article has a data-url attribute with the original article URL
-  const dataUrlRegex = /data-url="(https?:\/\/[^"]+)"/g;
-  let m: RegExpExecArray | null;
+  $('a[data-heatmap-target=".tit"]').each((_, el) => {
+    const a = $(el);
+    const rawHref = a.attr("href") ?? "";
+    const url = rawHref.replace(/&amp;/g, "&");
+    const title = a.text().trim();
+    if (!url || !title || !isValidUrl(url) || seen.has(url)) return;
+    seen.add(url);
 
-  while ((m = dataUrlRegex.exec(html)) !== null) {
-    const rawUrl = m[1]!;
-    const url = rawUrl.replace(/&amp;/g, "&");
-    const dataUrlPos = m.index;
+    // Find position of this anchor in raw HTML (advance past previously processed ones)
+    const anchorSnippet = rawHref.slice(0, 60); // enough to be unique
+    let pos = html.indexOf(anchorSnippet, searchFrom);
+    if (pos < 0) pos = html.indexOf(anchorSnippet); // fallback to start
+    searchFrom = pos + 1;
 
-    // Date: last YYYY.MM.DD. pattern in the 2500 chars before data-url
-    const lookback = html.slice(Math.max(0, dataUrlPos - 2500), dataUrlPos);
-    const dateMatches = [...lookback.matchAll(/(\d{4})\.(\d{2})\.(\d{2})\./g)];
-    if (!dateMatches.length) continue;
-    const d = dateMatches[dateMatches.length - 1]!;
-    const dateStr = `${d[1]}-${d[2]}-${d[3]}`;
+    // Date: publisher metadata appears ~1000 chars BEFORE the .tit link in Naver's DOM
+    // Look back 2000 chars and forward 500 chars to cover the publisher/date block
+    const lookAhead = html.slice(Math.max(0, pos - 2000), pos + 500);
+    const dateStr = parseNaverDateText(lookAhead);
+    if (!dateStr) return;
 
-    // Title + summary: first two <a href="URL"> text contents in whole HTML
-    const titleMatches: string[] = [];
-    let searchPos = 0;
-    // Try both raw (with &amp;) and decoded URL forms
-    const candidates = rawUrl === url ? [url] : [url, rawUrl];
-    while (titleMatches.length < 2 && searchPos < html.length) {
-      let aIdx = -1;
-      let foundCandidate = "";
-      for (const cand of candidates) {
-        const pos = html.indexOf(`href="${cand}"`, searchPos);
-        if (pos !== -1 && (aIdx === -1 || pos < aIdx)) {
-          aIdx = pos;
-          foundCandidate = cand;
-        }
-      }
-      if (aIdx === -1) break;
-      const closeAngle = html.indexOf(">", aIdx);
-      const closeA     = html.indexOf("</a>", closeAngle + 1);
-      if (closeAngle === -1 || closeA === -1) break;
-      const text = html.slice(closeAngle + 1, closeA).replace(/<[^>]+>/g, "").trim();
-      if (text.length >= 3) titleMatches.push(text);
-      searchPos = closeA + 1;
-    }
+    // Summary: the .body sibling anchor (same URL, different heatmap target)
+    const summary = $(`a[data-heatmap-target=".body"]`)
+      .filter((_, el2) => {
+        const h = $(el2).attr("href") ?? "";
+        return h === rawHref || h.replace(/&amp;/g, "&") === url;
+      })
+      .text()
+      .trim();
 
-    const title   = titleMatches[0] ?? "";
-    const summary = titleMatches[1] ?? "";
-    if (!title) continue;
+    results.push({ url, title, summary, dateStr });
+  });
 
-    articles.push({ url, title, summary, dateStr });
-  }
-
-  return articles;
+  return results;
 }
 
 export async function crawlNaverWebSearch(
