@@ -180,6 +180,7 @@ export function resolveMediaName(url: string, fallbackName?: string): string {
       "news.naver.com": "네이버뉴스",
       "news.daum.net": "다음뉴스",
       "v.daum.net": "다음뉴스",
+      "search.daum.net": "다음뉴스",
       // Entertainment sites
       "discoverynews.kr": "디스커버리뉴스",
     };

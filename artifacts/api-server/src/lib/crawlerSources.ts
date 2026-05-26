@@ -1,5 +1,6 @@
 import Parser from "rss-parser";
 import axios from "axios";
+import * as cheerio from "cheerio";
 import { logger } from "./logger";
 import { isRelevant, stripHtml, isValidUrl, resolveMediaName, ArticleData } from "./crawlerUtils";
 import { NEWS_SOURCES, NewsSource } from "./rssFeedList";
@@ -276,83 +277,87 @@ export async function crawlAllSources(
   return all;
 }
 
-// ── Daum(Kakao) 뉴스 검색 API ────────────────────────────────────────────
-// 한 번 요청당 최대 50건, page 파라미터로 페이지네이션
-interface KakaoNewsDoc {
-  title: string;
-  contents: string;
-  url: string;
-  datetime: string; // ISO 8601
-  publisher?: string;
-}
+// ── Daum 뉴스 웹 스크래핑 ────────────────────────────────────────────────
+// Kakao /v2/search/news API는 폐기됨 → search.daum.net 직접 스크래핑
+// 구조: .item-title > strong.tit-g > a (href=v.daum.net URL, text=제목)
+//       URL 패턴 /v/YYYYMMDDXXXXXXXX 에서 날짜 추출
+const DAUM_QUERIES = ["노들섬", "노들 예술섬"];
+const DAUM_HEADERS = {
+  "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+  "Accept-Language": "ko-KR,ko;q=0.9,en;q=0.8",
+  Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+};
 
-interface KakaoNewsResponse {
-  documents: KakaoNewsDoc[];
-  meta: { total_count: number; pageable_count: number; is_end: boolean };
-}
-
-async function crawlDaumForMonth(
+async function crawlDaumWebForMonth(
   query: string,
   startDate: string,
   endDate: string,
-  apiKey: string,
 ): Promise<ArticleData[]> {
+  const results: ArticleData[] = [];
   const start = kstStart(startDate);
   const end   = kstEnd(endDate);
-  const results: ArticleData[] = [];
-  const size = 50;
 
-  for (let page = 1; page <= 50; page++) {
+  const sd = startDate.replace(/-/g, "") + "000000";
+  const ed = endDate.replace(/-/g, "")   + "235959";
+
+  for (let page = 1; page <= 20; page++) {
     try {
-      const resp = await axios.get<KakaoNewsResponse>(
-        "https://dapi.kakao.com/v2/search/news",
-        {
-          headers: { Authorization: `KakaoAK ${apiKey}` },
-          params: { query, sort: "recency", page, size },
-          timeout: TIMEOUT_MS,
-        },
-      );
+      const resp = await axios.get<string>("https://search.daum.net/search", {
+        params: { w: "news", q: query, sort: "recency", period: "u", sd, ed, page },
+        headers: DAUM_HEADERS,
+        timeout: 12000,
+        responseType: "text",
+      });
 
-      const { documents, meta } = resp.data;
-      if (!documents || documents.length === 0) break;
+      const $ = cheerio.load(resp.data as string);
+      const items = $(".item-title");
+      if (items.length === 0) break;
 
-      let anyInRange = false;
-      for (const doc of documents) {
-        const pubDate = new Date(doc.datetime);
-        if (isNaN(pubDate.getTime())) continue;
-        if (pubDate > end) continue;   // 아직 미래 기사 — 스킵
-        if (pubDate < start) {
-          // 이미 범위 이전 — 이후 페이지는 더 오래됨, 조기 종료
-          anyInRange = false;
-          break;
-        }
-        anyInRange = true;
+      let outOfRangeCount = 0;
 
-        const title   = stripHtml(doc.title);
-        const content = stripHtml(doc.contents);
-        const url     = doc.url;
+      items.each((_, el) => {
+        const a     = $(el).find("a").first();
+        const url   = a.attr("href") ?? "";
+        const title = a.text().trim();
 
-        if (!title || !isValidUrl(url)) continue;
-        if (!isRelevant(title, content)) continue;
+        if (!url || !title || !isValidUrl(url)) return;
 
-        const publisher = doc.publisher ?? "";
+        // Extract date from v.daum.net URL: /v/YYYYMMDDXXXXXXXXX
+        const dateM = url.match(/\/v\/(\d{4})(\d{2})(\d{2})\d+/);
+        if (!dateM) return;
+        const pubDate = new Date(`${dateM[1]}-${dateM[2]}-${dateM[3]}T12:00:00+09:00`);
+        if (isNaN(pubDate.getTime())) return;
+
+        if (pubDate > end) return;
+        if (pubDate < start) { outOfRangeCount++; return; }
+
+        // Get content snippet from sibling .item-contents
+        const bundle  = $(el).parent().parent(); // item-bundle-mid
+        const content = bundle.find(".item-contents .conts-desc").text().trim();
+
+        const cleanTitle   = stripHtml(title);
+        const cleanContent = stripHtml(content);
+        if (!isRelevant(cleanTitle, cleanContent)) return;
+
         results.push({
-          title,
-          content,
+          title:       cleanTitle,
+          content:     cleanContent,
           url,
           publishedAt: pubDate,
-          mediaName: resolveMediaName(url, publisher),
-          isNegative: false,
-          isSelfPR: false,
-          source: "daum_api",
+          mediaName:   resolveMediaName(url, "다음뉴스"),
+          isNegative:  false,
+          isSelfPR:    false,
+          source:      "daum_web",
         });
-      }
+      });
 
-      if (meta.is_end || !anyInRange) break;
-      await new Promise((r) => setTimeout(r, 150));
+      // If most items are already before our start date, stop paginating
+      if (outOfRangeCount >= items.length * 0.7) break;
+
+      await new Promise((r) => setTimeout(r, 300));
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      logger.warn({ query, page }, `Daum API error: ${msg}`);
+      logger.warn({ query, page }, `Daum web search error: ${msg}`);
       break;
     }
   }
@@ -364,20 +369,16 @@ export async function crawlDaumNews(
   startDate: string,
   endDate: string,
 ): Promise<ArticleData[]> {
-  const apiKey = process.env.KAKAO_REST_API_KEY;
-  if (!apiKey) {
-    logger.warn("KAKAO_REST_API_KEY not set — skipping Daum News crawl");
-    return [];
-  }
-
   const months = splitIntoMonths(startDate, endDate);
-  logger.info({ months: months.length, startDate, endDate }, "Daum crawl: monthly split");
+  logger.info({ months: months.length, startDate, endDate }, "Daum web crawl: monthly split");
 
   const allResults: ArticleData[] = [];
   for (const month of months) {
-    const items = await crawlDaumForMonth("노들섬", month.start, month.end, apiKey);
-    allResults.push(...items);
-    logger.debug({ month: month.start, found: items.length }, "Daum month done");
+    for (const query of DAUM_QUERIES) {
+      const items = await crawlDaumWebForMonth(query, month.start, month.end);
+      allResults.push(...items);
+      logger.debug({ query, month: month.start, found: items.length }, "Daum web month+query done");
+    }
   }
 
   logger.info({ total: allResults.length }, "Daum News crawl complete");
