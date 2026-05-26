@@ -1,24 +1,10 @@
-// Relevance filter for 노들섬 news
+// Relevance filter — "노들" 포함 기사 수집, 단 "노들장애인야학"·"노들강변" 제외
+const EXCLUDE_PATTERNS = ["노들장애인야학", "노들강변"];
+
 export function isRelevant(title: string, content: string): boolean {
   const text = title + " " + content;
-
-  // STEP 1: Hard include — if any of these exist, always return true immediately
-  if (
-    text.includes("노들섬") ||
-    text.includes("노들 예술섬") ||
-    text.includes("예술섬 노들")
-  ) {
-    return true;
-  }
-
-  // STEP 2: "노들" 포함 기사는 제외 패턴이 없으면 모두 수집
-  if (text.includes("노들")) {
-    const exclusionPatterns = ["노들장애인야학", "노들강변"];
-    const hasExclusion = exclusionPatterns.some((e) => text.includes(e));
-    return !hasExclusion;
-  }
-
-  return false;
+  if (!text.includes("노들")) return false;
+  return !EXCLUDE_PATTERNS.some((e) => text.includes(e));
 }
 
 // Rule-based negative sentiment analysis (used when ANTHROPIC_API_KEY is not set)

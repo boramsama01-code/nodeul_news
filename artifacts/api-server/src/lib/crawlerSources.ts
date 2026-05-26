@@ -95,9 +95,7 @@ async function crawlSource(
 
 // ── 네이버 뉴스 검색 API ──────────────────────────────────────────────────
 // 쿼리당 최대 1000건 (100건 × 10페이지), 여러 키워드로 수집
-// "노들섬"·"노들 예술섬" 두 쿼리로 수집 — 광범위한 "노들" 단어는 무관 기사가
-// 수천 건 포함되어 1000건 한도를 금방 채우므로 제외한다
-const NAVER_QUERIES = ["노들섬", "노들 예술섬", "노들 예술"];
+const NAVER_QUERIES = ["노들"];
 
 interface NaverNewsItem {
   title: string;
@@ -281,7 +279,7 @@ export async function crawlAllSources(
 // Kakao /v2/search/news API는 폐기됨 → search.daum.net 직접 스크래핑
 // 구조: .item-title > strong.tit-g > a (href=v.daum.net URL, text=제목)
 //       URL 패턴 /v/YYYYMMDDXXXXXXXX 에서 날짜 추출
-const DAUM_QUERIES = ["노들섬", "노들 예술섬"];
+const DAUM_QUERIES = ["노들"];
 const DAUM_HEADERS = {
   "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
   "Accept-Language": "ko-KR,ko;q=0.9,en;q=0.8",
@@ -389,7 +387,7 @@ export async function crawlDaumNews(
 // openapi.naver.com 은 최대 1,000건 한도로 과거 기사를 놓치는 구조적 한계가 있다.
 // search.naver.com 의 날짜 필터(pd=3, ds/de)를 직접 스크래핑해 임의 기간을 커버한다.
 // 파싱 기반: data-url 속성(기사 URL) + 앞부분 <a href> 텍스트(제목) + YYYY.MM.DD. 날짜
-const NAVER_WEB_QUERIES = ["노들섬", "노들 예술섬", "노들 예술"];
+const NAVER_WEB_QUERIES = ["노들"];
 const NAVER_WEB_HEADERS = {
   "User-Agent":
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
