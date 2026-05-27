@@ -3,6 +3,8 @@ modules = ["nodejs-24", "postgresql-16"]
 [deployment]
 router = "application"
 deploymentTarget = "autoscale"
+run = ["node", "--enable-source-maps", "artifacts/api-server/dist/index.mjs"]
+build = ["bash", "-c", "pnpm --filter @workspace/api-server run build && pnpm --filter @workspace/web run build"]
 
 [deployment.postBuild]
 args = ["pnpm", "store", "prune"]
@@ -33,20 +35,20 @@ outputType = "webview"
 
 [[workflows.workflow.tasks]]
 task = "shell.exec"
-args = "PORT=22333 BASE_PATH=/ pnpm --filter @workspace/web run dev"
-waitForPort = 22333
+args = "PORT=5000 API_PORT=8099 BASE_PATH=/ pnpm --filter @workspace/web run dev"
+waitForPort = 5000
 
 [[workflows.workflow]]
 name = "API Server"
 author = "agent"
 
-[[workflows.workflow.tasks]]
-task = "shell.exec"
-args = "PORT=8080 pnpm --filter @workspace/api-server run dev"
-waitForPort = 8080
-
 [workflows.workflow.metadata]
 outputType = "console"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "PORT=8099 pnpm --filter @workspace/api-server run dev"
+waitForPort = 8099
 
 [agent]
 stack = "BEST_EFFORT_FALLBACK"
@@ -57,12 +59,20 @@ path = "scripts/post-merge.sh"
 timeoutMs = 20000
 
 [[ports]]
+localPort = 5000
+externalPort = 80
+
+[[ports]]
 localPort = 8080
 externalPort = 80
 
 [[ports]]
 localPort = 8081
 externalPort = 8081
+
+[[ports]]
+localPort = 8099
+externalPort = 8099
 
 [[ports]]
 localPort = 22333
