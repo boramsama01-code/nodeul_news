@@ -215,14 +215,14 @@ export default function Dashboard() {
                       iconSize={8}
                       wrapperStyle={{ fontSize: "12px", paddingTop: "8px" }}
                     />
-                    <Bar dataKey="총보도" fill="hsl(var(--chart-1))" radius={[3, 3, 0, 0]} maxBarSize={36} />
+                    <Bar dataKey="총보도" fill="hsl(var(--foreground))" radius={[3, 3, 0, 0]} maxBarSize={36} />
                     <Bar dataKey="부정보도" fill="hsl(var(--destructive))" radius={[3, 3, 0, 0]} maxBarSize={36} fillOpacity={0.85} />
                     <Line
                       type="monotone"
                       dataKey="순보도"
-                      stroke="hsl(var(--chart-2))"
+                      stroke="hsl(var(--chart-1))"
                       strokeWidth={2}
-                      dot={{ r: 3, fill: "hsl(var(--chart-2))" }}
+                      dot={{ r: 3, fill: "hsl(var(--chart-1))" }}
                     />
                   </ComposedChart>
                 </ResponsiveContainer>
