@@ -11,8 +11,8 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import {
-  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
-  Line, Legend, ComposedChart, ReferenceLine, Cell,
+  Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
+  Line, Legend, ComposedChart,
 } from "recharts";
 import { TrendingUp, TrendingDown, Minus, Newspaper, AlertTriangle, Megaphone, BarChart2 } from "lucide-react";
 
@@ -95,6 +95,9 @@ export default function Dashboard() {
       올해: m.total,
       전년: prevTotal,
       증감: m.total - prevTotal,
+      총보도: m.total,
+      부정보도: m.negative,
+      순보도: m.total - m.negative,
     };
   });
 
@@ -173,8 +176,8 @@ export default function Dashboard() {
         <Card className="col-span-1 lg:col-span-2">
           <CardHeader className="pb-2">
             <CardTitle className="text-base flex items-center justify-between">
-              <span>월별 보도 추이</span>
-              <span className="text-xs font-normal text-muted-foreground">올해 vs 전년 대비</span>
+              <span>연간 월별 보도 추이</span>
+              <span className="text-xs font-normal text-muted-foreground">{selectedYear}년 · 총보도/부정/순보도</span>
             </CardTitle>
           </CardHeader>
           <CardContent>
@@ -199,10 +202,7 @@ export default function Dashboard() {
                     />
                     <Tooltip
                       labelFormatter={(v) => `${v}월`}
-                      formatter={(value: number, name: string) => {
-                        if (name === "증감") return [`${value > 0 ? "+" : ""}${value}건`, "전년 대비"];
-                        return [`${value}건`, name];
-                      }}
+                      formatter={(value: number, name: string) => [`${value}건`, name]}
                       contentStyle={{
                         borderRadius: "8px",
                         border: "1px solid hsl(var(--border))",
@@ -215,14 +215,14 @@ export default function Dashboard() {
                       iconSize={8}
                       wrapperStyle={{ fontSize: "12px", paddingTop: "8px" }}
                     />
-                    <Bar dataKey="올해" fill="hsl(var(--chart-1))" radius={[3, 3, 0, 0]} maxBarSize={36} />
+                    <Bar dataKey="총보도" fill="hsl(var(--chart-1))" radius={[3, 3, 0, 0]} maxBarSize={36} />
+                    <Bar dataKey="부정보도" fill="hsl(var(--destructive))" radius={[3, 3, 0, 0]} maxBarSize={36} fillOpacity={0.85} />
                     <Line
                       type="monotone"
-                      dataKey="전년"
-                      stroke="hsl(var(--chart-4))"
+                      dataKey="순보도"
+                      stroke="hsl(var(--chart-2))"
                       strokeWidth={2}
-                      strokeDasharray="4 3"
-                      dot={{ r: 3, fill: "hsl(var(--chart-4))" }}
+                      dot={{ r: 3, fill: "hsl(var(--chart-2))" }}
                     />
                   </ComposedChart>
                 </ResponsiveContainer>
@@ -275,8 +275,8 @@ export default function Dashboard() {
         <Card>
           <CardHeader className="pb-2">
             <CardTitle className="text-base flex items-center justify-between">
-              <span>전년 대비 월별 증감</span>
-              <span className="text-xs font-normal text-muted-foreground">{selectedYear - 1}년 대비 +/-건</span>
+              <span>전년 대비 월별 보도량</span>
+              <span className="text-xs font-normal text-muted-foreground">{selectedYear}년 vs {selectedYear - 1}년</span>
             </CardTitle>
           </CardHeader>
           <CardContent>
@@ -285,7 +285,7 @@ export default function Dashboard() {
             ) : (
               <div className="h-[160px]">
                 <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={chartData} margin={{ top: 4, right: 4, bottom: 0, left: -20 }}>
+                  <ComposedChart data={chartData} margin={{ top: 4, right: 4, bottom: 0, left: -20 }}>
                     <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="hsl(var(--border))" />
                     <XAxis
                       dataKey="month"
@@ -301,7 +301,7 @@ export default function Dashboard() {
                     />
                     <Tooltip
                       labelFormatter={(v) => `${v}월`}
-                      formatter={(value: number) => [`${value > 0 ? "+" : ""}${value}건`, "전년 대비 증감"]}
+                      formatter={(value: number, name: string) => [`${value}건`, name]}
                       contentStyle={{
                         borderRadius: "8px",
                         border: "1px solid hsl(var(--border))",
@@ -309,17 +309,25 @@ export default function Dashboard() {
                         background: "hsl(var(--card))",
                       }}
                     />
-                    <ReferenceLine y={0} stroke="hsl(var(--border))" strokeWidth={1.5} />
-                    <Bar dataKey="증감" radius={[3, 3, 0, 0]} maxBarSize={40}>
-                      {chartData.map((entry, index) => (
-                        <Cell
-                          key={index}
-                          fill={entry.증감 >= 0 ? "hsl(var(--chart-1))" : "hsl(var(--destructive))"}
-                          fillOpacity={0.85}
-                        />
-                      ))}
-                    </Bar>
-                  </BarChart>
+                    <Legend iconType="circle" iconSize={8} wrapperStyle={{ fontSize: "12px", paddingTop: "8px" }} />
+                    <Line
+                      type="monotone"
+                      dataKey="올해"
+                      name={`${selectedYear}년`}
+                      stroke="hsl(var(--chart-1))"
+                      strokeWidth={2.5}
+                      dot={{ r: 3, fill: "hsl(var(--chart-1))" }}
+                    />
+                    <Line
+                      type="monotone"
+                      dataKey="전년"
+                      name={`${selectedYear - 1}년`}
+                      stroke="hsl(var(--chart-4))"
+                      strokeWidth={2}
+                      strokeDasharray="4 3"
+                      dot={{ r: 3, fill: "hsl(var(--chart-4))" }}
+                    />
+                  </ComposedChart>
                 </ResponsiveContainer>
               </div>
             )}
