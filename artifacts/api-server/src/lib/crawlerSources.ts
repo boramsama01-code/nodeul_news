@@ -1,11 +1,11 @@
 import Parser from "rss-parser";
-import axios from "axios";
+import axios, { AxiosResponse } from "axios";
 import * as cheerio from "cheerio";
 import { logger } from "./logger";
 import { isRelevant, stripHtml, isValidUrl, resolveMediaName, ArticleData } from "./crawlerUtils";
 import { NEWS_SOURCES, NewsSource } from "./rssFeedList";
 
-const TIMEOUT_MS = 10000;
+const TIMEOUT_MS = 30000;
 
 const rssParser = new Parser({
   timeout: TIMEOUT_MS,
@@ -21,6 +21,20 @@ function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
       setTimeout(() => reject(new Error(`Timeout after ${ms}ms`)), ms),
     ),
   ]);
+}
+
+// 배포 환경의 간헐적 네트워크 실패(timeout 등)를 흡수하는 재시도 래퍼
+async function withRetry<T>(fn: () => Promise<T>, retries = 2, delayMs = 1500): Promise<T> {
+  let lastErr: unknown;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      lastErr = err;
+      if (attempt < retries) await new Promise((r) => setTimeout(r, delayMs * (attempt + 1)));
+    }
+  }
+  throw lastErr;
 }
 
 // Interpret a "YYYY-MM-DD" date string as KST (UTC+9) day boundaries
@@ -119,7 +133,7 @@ async function fetchNaverNewsPage(
   clientId: string,
   clientSecret: string,
 ): Promise<NaverNewsItem[]> {
-  const response = await axios.get<NaverNewsResponse>(
+  const response = await withRetry<AxiosResponse<NaverNewsResponse>>(() => axios.get<NaverNewsResponse>(
     "https://openapi.naver.com/v1/search/news.json",
     {
       params: { query, display, start, sort: "date" },
@@ -129,7 +143,7 @@ async function fetchNaverNewsPage(
       },
       timeout: TIMEOUT_MS,
     },
-  );
+  ));
   return response.data.items || [];
 }
 
@@ -301,12 +315,12 @@ async function crawlDaumWebForMonth(
 
   for (let page = 1; page <= 20; page++) {
     try {
-      const resp = await axios.get<string>("https://search.daum.net/search", {
+      const resp = await withRetry<AxiosResponse<string>>(() => axios.get<string>("https://search.daum.net/search", {
         params: { w: "news", q: query, sort: "recency", period: "u", sd, ed, page },
         headers: DAUM_HEADERS,
-        timeout: 12000,
+        timeout: 30000,
         responseType: "text",
-      });
+      }));
 
       const $ = cheerio.load(resp.data as string);
       const items = $(".item-title");
@@ -482,11 +496,11 @@ export async function crawlNaverWebSearch(
 
     for (let start = 1; start <= 1000; start += 10) {
       try {
-        const resp = await axios.get<string>("https://search.naver.com/search.naver", {
+        const resp = await withRetry<AxiosResponse<string>>(() => axios.get<string>("https://search.naver.com/search.naver", {
           params: { where: "news", query, sort: 1, pd: 3, ds, de, start },
           headers: NAVER_WEB_HEADERS,
-          timeout: 12000,
-        });
+          timeout: 30000,
+        }));
 
         const articles = extractNaverWebArticles(resp.data as string);
 
