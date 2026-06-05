@@ -202,22 +202,23 @@ export function isDuplicate(
   title: string,
   publishedAt: Date,
   existingSet: Set<string>,
+  source = "",
 ): boolean {
-  const normalizedUrl = url.toLowerCase().trim().replace(/\/$/, "");
+  const normalizedUrl = `${source}__` + url.toLowerCase().trim().replace(/\/$/, "");
   if (existingSet.has(normalizedUrl)) return true;
 
   const dateStr = publishedAt.toISOString().split("T")[0];
-  const fingerprint = `${title.trim().replace(/\s+/g, "")}__${dateStr}`;
+  const fingerprint = `${source}__${title.trim().replace(/\s+/g, "")}__${dateStr}`;
   if (existingSet.has(fingerprint)) return true;
 
   return false;
 }
 
 // Add URL and fingerprint to existing set
-export function addToSet(url: string, title: string, publishedAt: Date, set: Set<string>): void {
-  set.add(url.toLowerCase().trim().replace(/\/$/, ""));
+export function addToSet(url: string, title: string, publishedAt: Date, set: Set<string>, source = ""): void {
+  set.add(`${source}__` + url.toLowerCase().trim().replace(/\/$/, ""));
   const dateStr = publishedAt.toISOString().split("T")[0];
-  set.add(`${title.trim().replace(/\s+/g, "")}__${dateStr}`);
+  set.add(`${source}__${title.trim().replace(/\s+/g, "")}__${dateStr}`);
 }
 
 // Strip HTML tags

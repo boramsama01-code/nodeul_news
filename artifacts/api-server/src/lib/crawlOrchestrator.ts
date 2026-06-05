@@ -18,13 +18,15 @@ async function loadExistingSet(): Promise<Set<string>> {
       url: articlesTable.url,
       title: articlesTable.title,
       publishedAt: articlesTable.publishedAt,
+      source: articlesTable.source,
     })
     .from(articlesTable);
 
   for (const a of existing) {
-    existingSet.add(a.url.toLowerCase().trim().replace(/\/$/, ""));
+    const src = a.source ?? "";
+    existingSet.add(`${src}__` + a.url.toLowerCase().trim().replace(/\/$/, ""));
     const dateStr = a.publishedAt.toISOString().split("T")[0];
-    existingSet.add(`${a.title.trim().replace(/\s+/g, "")}__${dateStr}`);
+    existingSet.add(`${src}__${a.title.trim().replace(/\s+/g, "")}__${dateStr}`);
   }
 
   return existingSet;
@@ -81,12 +83,12 @@ export async function runCrawlJob(
   for (const article of articles) {
     if (!isRelevant(article.title, article.content)) continue;
     if (!isValidUrl(article.url)) continue;
-    if (isDuplicate(article.url, article.title, article.publishedAt, existingSet)) {
+    if (isDuplicate(article.url, article.title, article.publishedAt, existingSet, article.source)) {
       totalDuplicates++;
       continue;
     }
 
-    addToSet(article.url, article.title, article.publishedAt, existingSet);
+    addToSet(article.url, article.title, article.publishedAt, existingSet, article.source);
 
     const isNegative = false; // 자동 판단 비활성화 — 수동으로만 설정
 

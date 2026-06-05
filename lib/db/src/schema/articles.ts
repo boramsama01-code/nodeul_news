@@ -1,4 +1,4 @@
-import { pgTable, text, serial, timestamp, boolean, index } from "drizzle-orm/pg-core";
+import { pgTable, text, serial, timestamp, boolean, index, unique } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod/v4";
 
@@ -8,7 +8,7 @@ export const articlesTable = pgTable(
     id: serial("id").primaryKey(),
     title: text("title").notNull(),
     content: text("content").notNull().default(""),
-    url: text("url").notNull().unique(),
+    url: text("url").notNull(),
     publishedAt: timestamp("published_at", { withTimezone: true }).notNull(),
     mediaName: text("media_name").notNull(),
     isNegative: boolean("is_negative").notNull().default(false),
@@ -19,6 +19,7 @@ export const articlesTable = pgTable(
   (table) => [
     index("articles_published_at_idx").on(table.publishedAt),
     index("articles_media_name_idx").on(table.mediaName),
+    unique("articles_url_source_unique").on(table.url, table.source),
   ],
 );
 
