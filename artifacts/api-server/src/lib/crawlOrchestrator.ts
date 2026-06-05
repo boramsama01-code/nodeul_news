@@ -103,8 +103,16 @@ export async function runCrawlJob(
       });
       totalCollected++;
     } catch (err: unknown) {
-      const code = (err as { code?: string })?.code;
-      if (code === "23505" || code === "P2002") {
+      // Postgres duplicate-key code (23505) may be on the error itself or nested
+      // under .cause (Drizzle wraps the original pg error in _DrizzleQueryError).
+      const e = err as { code?: string; cause?: { code?: string }; message?: string };
+      const code = e?.code ?? e?.cause?.code;
+      const isDupe =
+        code === "23505" ||
+        code === "P2002" ||
+        (e?.message?.includes("duplicate key") ?? false) ||
+        (e?.message?.includes("articles_url_unique") ?? false);
+      if (isDupe) {
         totalDuplicates++;
       } else {
         logger.error({ err }, "Failed to insert article");

@@ -231,7 +231,12 @@ async function crawlNaverQueryForMonth(
       await new Promise((r) => setTimeout(r, 150));
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      logger.warn({ query, pageStart }, `Naver API error: ${msg}`);
+      const status = (err as { response?: { status?: number } })?.response?.status;
+      if (status === 401) {
+        logger.info({ query }, "Naver API 401 — skipping API path (web path covers this)");
+      } else {
+        logger.warn({ query, pageStart }, `Naver API error: ${msg}`);
+      }
       break;
     }
   }
