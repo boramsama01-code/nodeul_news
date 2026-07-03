@@ -173,11 +173,10 @@ export function resolveMediaName(url: string, fallbackName?: string): string {
     const resolved = map[domain];
     if (resolved) return resolved;
 
-    // For subdomains, try the parent domain
-    const parts = domain.split(".");
-    if (parts.length > 2) {
-      const parent = parts.slice(-2).join(".");
-      if (map[parent]) return map[parent];
+    // Subdomain/suffix match: domain이 매핑 키로 끝나면 해당 언론사
+    // (sports.khan.co.kr → khan.co.kr, enter.etoday.co.kr → etoday.co.kr 등)
+    for (const key of Object.keys(map)) {
+      if (domain === key || domain.endsWith("." + key)) return map[key];
     }
 
     if (
@@ -193,6 +192,27 @@ export function resolveMediaName(url: string, fallbackName?: string): string {
   } catch {
     return fallbackName || "알수없음";
   }
+}
+
+// 채널 접두 표기용: 매핑된 언론사명만 반환, 미판별이면 빈 문자열
+export function resolveMediaNameStrict(url: string): string {
+  try {
+    const domain = new URL(url).hostname.replace(/^www\./, "");
+    const resolved = resolveMediaName(url, "");
+    // fallback 없이 호출했을 때 도메인이 그대로 반환되면 미판별
+    if (resolved === domain) return "";
+    return resolved;
+  } catch {
+    return "";
+  }
+}
+
+// mediaName에서 순수 언론사명 추출
+// "네이버(조선일보)" → "조선일보", "다음뉴스(뉴시스)" → "뉴시스"
+// "구글뉴스(기타)" → "기타", "조선일보"(rss_direct) → "조선일보"
+export function extractPressName(mediaName: string): string {
+  const m = mediaName.match(/\((.+)\)$/);
+  return m ? m[1] : mediaName;
 }
 
 // Deduplication check — URL-based + title+date fingerprint

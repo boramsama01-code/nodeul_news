@@ -2,7 +2,7 @@ import Parser from "rss-parser";
 import axios, { AxiosResponse } from "axios";
 import * as cheerio from "cheerio";
 import { logger } from "./logger";
-import { isRelevant, stripHtml, isValidUrl, resolveMediaName, ArticleData } from "./crawlerUtils";
+import { isRelevant, stripHtml, isValidUrl, resolveMediaName, resolveMediaNameStrict, ArticleData } from "./crawlerUtils";
 import { NEWS_SOURCES, NewsSource } from "./rssFeedList";
 
 const TIMEOUT_MS = 30000;
@@ -83,10 +83,25 @@ async function crawlSource(
           ? new Date(item.pubDate || item.isoDate || "")
           : new Date();
 
-        const mediaName = resolveMediaName(url, source.name);
+        let finalTitle = title;
+        let mediaName: string;
+        if (source.method === "google_news_rss") {
+          // 구글뉴스 제목: "기사제목 - 언론사" → 마지막 " - " 기준 분리
+          const sep = title.lastIndexOf(" - ");
+          if (sep > 0) {
+            const press = title.slice(sep + 3).trim();
+            finalTitle = title.slice(0, sep).trim();
+            mediaName = `구글뉴스(${press || "기타"})`;
+          } else {
+            mediaName = "구글뉴스(기타)";
+          }
+        } else {
+          // rss_direct: source.name이 곧 언론사명 (단독 표기)
+          mediaName = source.name;
+        }
 
         results.push({
-          title,
+          title: finalTitle,
           content,
           url,
           publishedAt: pubDate,
@@ -359,6 +374,9 @@ async function crawlDaumWebForMonth(
         const bundle  = $(el).parent().parent(); // item-bundle-mid
         const content = bundle.find(".item-contents .conts-desc").text().trim();
 
+        // 원본 언론사명: 기사 항목(li) 내 a.item-writer .txt_info
+        const pressName = $(el).closest("li").find("a.item-writer .txt_info").first().text().trim();
+
         const cleanTitle   = stripHtml(title);
         const cleanContent = stripHtml(content);
         if (!isRelevant(cleanTitle, cleanContent)) return;
@@ -368,7 +386,7 @@ async function crawlDaumWebForMonth(
           content:     cleanContent,
           url,
           publishedAt: pubDate,
-          mediaName:   resolveMediaName(url, "다음뉴스"),
+          mediaName:   `다음뉴스(${pressName || "기타"})`,
           isNegative:  false,
           isSelfPR:    false,
           source:      "daum_web",
@@ -529,14 +547,14 @@ export async function crawlNaverWebSearch(
             content:     article.summary,
             url:         article.url,
             publishedAt: pubDate,
-            mediaName:   "네이버뉴스",
+            mediaName:   `네이버(${resolveMediaNameStrict(article.url) || "기타"})`,
             isNegative:  false,
             isSelfPR:    false,
             source:      "naver_web",
           });
         }
 
-        await new Promise((r) => setTimeout(r, 300));
+        await new Promise((r) => setTimeout(r, 800));
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         logger.warn({ query, start }, `Naver web search error: ${msg}`);

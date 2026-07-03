@@ -7,6 +7,7 @@ import {
   isDuplicate,
   addToSet,
   isValidUrl,
+  extractPressName,
   ArticleData,
 } from "./crawlerUtils";
 import { crawlAllSources, crawlNaverNews, crawlDaumNews, crawlNaverWebSearch } from "./crawlerSources";
@@ -50,13 +51,15 @@ async function loadExistingSet(): Promise<Set<string>> {
       url: articlesTable.url,
       title: articlesTable.title,
       publishedAt: articlesTable.publishedAt,
+      source: articlesTable.source,
     })
     .from(articlesTable);
 
   for (const a of existing) {
-    existingSet.add(a.url.toLowerCase().trim().replace(/\/$/, ""));
+    const src = a.source ?? "";
+    existingSet.add(`${src}__` + a.url.toLowerCase().trim().replace(/\/$/, ""));
     const dateStr = a.publishedAt.toISOString().split("T")[0];
-    existingSet.add(`${a.title.trim().replace(/\s+/g, "")}__${dateStr}`);
+    existingSet.add(`${src}__${a.title.trim().replace(/\s+/g, "")}__${dateStr}`);
   }
 
   return existingSet;
@@ -73,6 +76,8 @@ export async function runBulkCrawlJob(
   logger.info({ jobId, totalMonths, startDate, endDate }, "Starting bulk crawl");
 
   const existingSet = await loadExistingSet();
+  // media_direct 중복 관리: "제목__언론사명" 완전일치 기준 (전체 크롤 범위 유지)
+  const mediaDirectSet = new Set<string>();
   let totalCollected = 0;
   let totalDuplicates = 0;
 
@@ -93,7 +98,7 @@ export async function runBulkCrawlJob(
     logger.info({ jobId, month: month.label, start: month.start, end: month.end }, "Bulk crawl: processing month");
 
     const [naverApiRes, naverWebRes, daumRes, rssRes] = await Promise.allSettled([
-      crawlNaverNews(month.start, month.end),
+      Promise.resolve([] as ArticleData[]), // naver_api 제외: start<=1000 제약으로 과거 수집 불가, naver_web으로 대체
       crawlNaverWebSearch(month.start, month.end),
       crawlDaumNews(month.start, month.end),
       crawlAllSources(month.start, month.end),
@@ -116,12 +121,12 @@ export async function runBulkCrawlJob(
     for (const article of articles) {
       if (!isRelevant(article.title, article.content)) continue;
       if (!isValidUrl(article.url)) continue;
-      if (isDuplicate(article.url, article.title, article.publishedAt, existingSet)) {
+      if (isDuplicate(article.url, article.title, article.publishedAt, existingSet, article.source)) {
         totalDuplicates++;
         continue;
       }
 
-      addToSet(article.url, article.title, article.publishedAt, existingSet);
+      addToSet(article.url, article.title, article.publishedAt, existingSet, article.source);
 
       const isNegative = false; // 자동 판단 비활성화 — 수동으로만 설정
 
@@ -147,6 +152,38 @@ export async function runBulkCrawlJob(
       }
     }
 
+    // media_direct 파생: 포털 수집분 → 언론사 원게재 row (제목+언론사 완전일치 dedup)
+    // 우선순위 naver_web > daum_web > google_news_rss (대표 URL 선택용)
+    const mdPriority: Record<string, number> = { naver_web: 0, daum_web: 1, google_news_rss: 2 };
+    const mdSorted = [...articles].sort(
+      (a, b) => (mdPriority[a.source] ?? 9) - (mdPriority[b.source] ?? 9),
+    );
+    for (const article of mdSorted) {
+      if (!isRelevant(article.title, article.content)) continue;
+      if (!isValidUrl(article.url)) continue;
+      const press = extractPressName(article.mediaName);
+      const fp = article.title + "__" + press;
+      if (mediaDirectSet.has(fp)) continue;
+      mediaDirectSet.add(fp);
+      try {
+        await db.insert(articlesTable).values({
+          title: article.title,
+          content: article.content,
+          url: article.url,
+          publishedAt: article.publishedAt,
+          mediaName: press,
+          isNegative: false,
+          isSelfPR: article.isSelfPR,
+          source: "media_direct",
+        });
+        totalCollected++;
+      } catch (err: unknown) {
+        const code = (err as { code?: string })?.code;
+        if (code === "23505" || code === "P2002") totalDuplicates++;
+        else logger.error({ err }, "Failed to insert media_direct");
+      }
+    }
+
     const progressAfterMonth = Math.round(((i + 1) / totalMonths) * 90);
     await db
       .update(crawlJobsTable)
@@ -157,6 +194,11 @@ export async function runBulkCrawlJob(
         total: totalCollected + totalDuplicates,
       })
       .where(eq(crawlJobsTable.id, jobId));
+
+    // 월 간 지연: 네이버 rate limit 회복 (연속 요청 누적 차단 방지)
+    if (i < months.length - 1) {
+      await new Promise((r) => setTimeout(r, 5000));
+    }
   }
 
   await db
