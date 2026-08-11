@@ -24,16 +24,24 @@ router.post("/crawl/start", async (req, res): Promise<void> => {
   const { startDate, endDate } = parsed.data;
   const jobId = uuidv4();
 
-  await db.insert(crawlJobsTable).values({
-    id: jobId,
-    status: "running",
-    collected: 0,
-    duplicates: 0,
-    total: 0,
-    progress: 0,
-    currentSource: "",
-    error: "",
-  });
+  try {
+    await db.insert(crawlJobsTable).values({
+      id: jobId,
+      status: "running",
+      collected: 0,
+      duplicates: 0,
+      total: 0,
+      progress: 0,
+      currentSource: "",
+      error: "",
+    });
+  } catch (err) {
+    logger.error({ err, jobId }, "Unable to create crawl job");
+    res.status(503).json({
+      error: "수집 작업 저장소가 준비되지 않았습니다. 앱을 다시 게시해 데이터베이스 스키마를 동기화해 주세요.",
+    });
+    return;
+  }
 
   // Fire and forget — do NOT await
   runCrawlJob(jobId, startDate, endDate).catch((err) => {
@@ -58,16 +66,24 @@ router.post("/crawl/bulk-start", async (req, res): Promise<void> => {
   const { startDate, endDate } = parsed.data;
   const jobId = uuidv4();
 
-  await db.insert(crawlJobsTable).values({
-    id: jobId,
-    status: "running",
-    collected: 0,
-    duplicates: 0,
-    total: 0,
-    progress: 0,
-    currentSource: "",
-    error: "",
-  });
+  try {
+    await db.insert(crawlJobsTable).values({
+      id: jobId,
+      status: "running",
+      collected: 0,
+      duplicates: 0,
+      total: 0,
+      progress: 0,
+      currentSource: "",
+      error: "",
+    });
+  } catch (err) {
+    logger.error({ err, jobId }, "Unable to create bulk crawl job");
+    res.status(503).json({
+      error: "수집 작업 저장소가 준비되지 않았습니다. 앱을 다시 게시해 데이터베이스 스키마를 동기화해 주세요.",
+    });
+    return;
+  }
 
   // Fire and forget — do NOT await
   runBulkCrawlJob(jobId, startDate, endDate).catch((err) => {

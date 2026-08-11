@@ -28,6 +28,17 @@ async function fetchSettings(): Promise<SettingsResponse> {
 
 type JobMode = "manual" | "bulk";
 
+function getCrawlStartErrorMessage(error: unknown): string {
+  const message = error instanceof Error ? error.message : "";
+  if (message.includes("수집 작업 저장소가 준비되지 않았습니다")) {
+    return "배포 데이터베이스가 최신 상태가 아닙니다. 앱을 다시 게시해 데이터베이스 스키마를 동기화해 주세요.";
+  }
+  if (message.includes("HTTP 5")) {
+    return "서버에서 수집 작업을 준비하지 못했습니다. 잠시 후 다시 시도해 주세요.";
+  }
+  return "서버 연결에 실패했습니다. 잠시 후 다시 시도해 주세요.";
+}
+
 export default function Crawl() {
   const { toast } = useToast();
 
@@ -101,8 +112,8 @@ export default function Crawl() {
           setActiveJobId(data.jobId);
           toast({ title: "수집 시작", description: "137개 언론사에서 병렬로 수집을 시작합니다." });
         },
-        onError: () => {
-          toast({ title: "수집 시작 실패", description: "서버 연결에 실패했습니다.", variant: "destructive" });
+        onError: (error) => {
+          toast({ title: "수집 시작 실패", description: getCrawlStartErrorMessage(error), variant: "destructive" });
         },
       },
     );
@@ -119,8 +130,8 @@ export default function Crawl() {
           setActiveJobId(data.jobId);
           toast({ title: "대량 수집 시작", description: "월별로 나눠 순차 수집합니다. 시간이 걸릴 수 있습니다." });
         },
-        onError: () => {
-          toast({ title: "수집 시작 실패", description: "서버 연결에 실패했습니다.", variant: "destructive" });
+        onError: (error) => {
+          toast({ title: "수집 시작 실패", description: getCrawlStartErrorMessage(error), variant: "destructive" });
         },
       },
     );

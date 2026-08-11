@@ -1,0 +1,1 @@
+- [Artifact API routing](artifact-api-routing.md) — preview and production route `/api` through the managed API artifact on port 8080.
