@@ -44,6 +44,7 @@ export const ListArticlesResponse = zod.object({
       isSelfPR: zod.boolean(),
       source: zod.string(),
       createdAt: zod.string(),
+      deletedAt: zod.string().nullish(),
     }),
   ),
   total: zod.number(),
@@ -63,6 +64,38 @@ export const CreateArticleBody = zod.object({
   isNegative: zod.boolean().optional(),
   isSelfPR: zod.boolean().optional(),
   source: zod.string().optional(),
+});
+
+/**
+ * @summary List deleted articles
+ */
+export const listTrashArticlesQueryPageDefault = 1;
+export const listTrashArticlesQueryLimitDefault = 20;
+
+export const ListTrashArticlesQueryParams = zod.object({
+  page: zod.coerce.number().default(listTrashArticlesQueryPageDefault),
+  limit: zod.coerce.number().default(listTrashArticlesQueryLimitDefault),
+});
+
+export const ListTrashArticlesResponse = zod.object({
+  data: zod.array(
+    zod.object({
+      id: zod.number(),
+      title: zod.string(),
+      content: zod.string(),
+      url: zod.string(),
+      publishedAt: zod.string(),
+      mediaName: zod.string(),
+      isNegative: zod.boolean(),
+      isSelfPR: zod.boolean(),
+      source: zod.string(),
+      createdAt: zod.string(),
+      deletedAt: zod.string().nullish(),
+    }),
+  ),
+  total: zod.number(),
+  page: zod.number(),
+  totalPages: zod.number(),
 });
 
 /**
@@ -88,6 +121,7 @@ export const UpdateArticleResponse = zod.object({
   isSelfPR: zod.boolean(),
   source: zod.string(),
   createdAt: zod.string(),
+  deletedAt: zod.string().nullish(),
 });
 
 /**
@@ -95,6 +129,27 @@ export const UpdateArticleResponse = zod.object({
  */
 export const DeleteArticleParams = zod.object({
   id: zod.coerce.number(),
+});
+
+/**
+ * @summary Restore a deleted article
+ */
+export const RestoreArticleParams = zod.object({
+  id: zod.coerce.number(),
+});
+
+export const RestoreArticleResponse = zod.object({
+  id: zod.number(),
+  title: zod.string(),
+  content: zod.string(),
+  url: zod.string(),
+  publishedAt: zod.string(),
+  mediaName: zod.string(),
+  isNegative: zod.boolean(),
+  isSelfPR: zod.boolean(),
+  source: zod.string(),
+  createdAt: zod.string(),
+  deletedAt: zod.string().nullish(),
 });
 
 /**
@@ -115,6 +170,7 @@ export const AnalyzeArticleResponse = zod.object({
   isSelfPR: zod.boolean(),
   source: zod.string(),
   createdAt: zod.string(),
+  deletedAt: zod.string().nullish(),
 });
 
 /**
@@ -230,6 +286,7 @@ export const GetRecentArticlesResponseItem = zod.object({
   isSelfPR: zod.boolean(),
   source: zod.string(),
   createdAt: zod.string(),
+  deletedAt: zod.string().nullish(),
 });
 export const GetRecentArticlesResponse = zod.array(
   GetRecentArticlesResponseItem,

@@ -17,4 +17,6 @@ export interface Article {
   isSelfPR: boolean;
   source: string;
   createdAt: string;
+  /** @nullable */
+  deletedAt?: string | null;
 }

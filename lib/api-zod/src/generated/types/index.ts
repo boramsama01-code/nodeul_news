@@ -18,6 +18,7 @@ export * from "./getStatsSummaryParams";
 export * from "./getTopMediaParams";
 export * from "./healthStatus";
 export * from "./listArticlesParams";
+export * from "./listTrashArticlesParams";
 export * from "./monthlyStat";
 export * from "./statsSummary";
 export * from "./topMediaItem";

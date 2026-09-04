@@ -1,12 +1,25 @@
 import { Router, type IRouter } from "express";
 import { db, articlesTable } from "@workspace/db";
-import { eq, and, ilike, or, sql, gte, lte, desc } from "drizzle-orm";
+import {
+  eq,
+  and,
+  ilike,
+  or,
+  sql,
+  gte,
+  lte,
+  desc,
+  isNull,
+  isNotNull,
+} from "drizzle-orm";
 import {
   ListArticlesQueryParams,
+  ListTrashArticlesQueryParams,
   CreateArticleBody,
   UpdateArticleParams,
   UpdateArticleBody,
   DeleteArticleParams,
+  RestoreArticleParams,
   AnalyzeArticleParams,
 } from "@workspace/api-zod";
 import { analyzeArticleSentiment } from "../lib/aiAnalysis";
@@ -26,7 +39,7 @@ router.get("/articles", async (req, res): Promise<void> => {
   const { year, month, keyword, isNegative, isSelfPR, page = 1, limit = 20 } = parsed.data;
   const offset = (page - 1) * limit;
 
-  const conditions = [];
+  const conditions = [isNull(articlesTable.deletedAt)];
 
   if (year != null) {
     conditions.push(
@@ -39,12 +52,11 @@ router.get("/articles", async (req, res): Promise<void> => {
     );
   }
   if (keyword) {
-    conditions.push(
-      or(
-        ilike(articlesTable.title, `%${keyword}%`),
-        ilike(articlesTable.mediaName, `%${keyword}%`),
-      ),
+    const keywordCondition = or(
+      ilike(articlesTable.title, `%${keyword}%`),
+      ilike(articlesTable.mediaName, `%${keyword}%`),
     );
+    if (keywordCondition) conditions.push(keywordCondition);
   }
   if (isNegative != null) {
     conditions.push(eq(articlesTable.isNegative, isNegative));
@@ -61,6 +73,42 @@ router.get("/articles", async (req, res): Promise<void> => {
       .from(articlesTable)
       .where(where)
       .orderBy(desc(articlesTable.publishedAt))
+      .limit(limit)
+      .offset(offset),
+    db
+      .select({ count: sql<number>`COUNT(*)` })
+      .from(articlesTable)
+      .where(where),
+  ]);
+
+  const total = Number(countResult[0]?.count ?? 0);
+
+  res.json({
+    data: articles.map(serializeArticle),
+    total,
+    page,
+    totalPages: Math.ceil(total / limit),
+  });
+});
+
+// GET /articles/trash
+router.get("/articles/trash", async (req, res): Promise<void> => {
+  const parsed = ListTrashArticlesQueryParams.safeParse(req.query);
+  if (!parsed.success) {
+    res.status(400).json({ error: parsed.error.message });
+    return;
+  }
+
+  const { page = 1, limit = 20 } = parsed.data;
+  const offset = (page - 1) * limit;
+  const where = isNotNull(articlesTable.deletedAt);
+
+  const [articles, countResult] = await Promise.all([
+    db
+      .select()
+      .from(articlesTable)
+      .where(where)
+      .orderBy(desc(articlesTable.deletedAt))
       .limit(limit)
       .offset(offset),
     db
@@ -152,8 +200,14 @@ router.delete("/articles/:id", async (req, res): Promise<void> => {
   }
 
   const [deleted] = await db
-    .delete(articlesTable)
-    .where(eq(articlesTable.id, params.data.id))
+    .update(articlesTable)
+    .set({ deletedAt: new Date() })
+    .where(
+      and(
+        eq(articlesTable.id, params.data.id),
+        isNull(articlesTable.deletedAt),
+      ),
+    )
     .returning();
 
   if (!deleted) {
@@ -162,6 +216,33 @@ router.delete("/articles/:id", async (req, res): Promise<void> => {
   }
 
   res.sendStatus(204);
+});
+
+// POST /articles/:id/restore
+router.post("/articles/:id/restore", async (req, res): Promise<void> => {
+  const params = RestoreArticleParams.safeParse(req.params);
+  if (!params.success) {
+    res.status(400).json({ error: params.error.message });
+    return;
+  }
+
+  const [restored] = await db
+    .update(articlesTable)
+    .set({ deletedAt: null })
+    .where(
+      and(
+        eq(articlesTable.id, params.data.id),
+        isNotNull(articlesTable.deletedAt),
+      ),
+    )
+    .returning();
+
+  if (!restored) {
+    res.status(404).json({ error: "Deleted article not found" });
+    return;
+  }
+
+  res.json(serializeArticle(restored));
 });
 
 // POST /articles/:id/analyze
@@ -204,7 +285,7 @@ router.post("/articles/:id/analyze", async (req, res): Promise<void> => {
 router.get("/articles/export", async (req, res): Promise<void> => {
   const { startDate, endDate } = req.query as { startDate?: string; endDate?: string };
 
-  const conditions = [];
+  const conditions = [isNull(articlesTable.deletedAt)];
   if (startDate) {
     conditions.push(gte(articlesTable.publishedAt, new Date(startDate + "T00:00:00+09:00")));
   }
@@ -289,6 +370,7 @@ function serializeArticle(a: typeof articlesTable.$inferSelect) {
     isSelfPR: a.isSelfPR,
     source: a.source,
     createdAt: a.createdAt.toISOString(),
+    deletedAt: a.deletedAt?.toISOString() ?? null,
   };
 }
 

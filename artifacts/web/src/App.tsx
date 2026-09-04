@@ -9,6 +9,7 @@ import Crawl from "@/pages/crawl";
 import Articles from "@/pages/articles";
 import Stats from "@/pages/stats";
 import SettingsPage from "@/pages/settings";
+import Trash from "@/pages/trash";
 
 const queryClient = new QueryClient();
 
@@ -19,6 +20,7 @@ function Router() {
       <Route path="/crawl" component={Crawl} />
       <Route path="/articles" component={Articles} />
       <Route path="/stats" component={Stats} />
+      <Route path="/trash" component={Trash} />
       <Route path="/settings" component={SettingsPage} />
       <Route component={NotFound} />
     </Switch>

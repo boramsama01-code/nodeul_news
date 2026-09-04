@@ -105,6 +105,7 @@ export default function Articles() {
 
   const invalidate = useCallback(() => {
     queryClient.invalidateQueries({ queryKey: getListArticlesQueryKey() });
+    queryClient.invalidateQueries({ queryKey: ["/api/stats"] });
   }, [queryClient]);
 
   useEffect(() => {
@@ -119,12 +120,12 @@ export default function Articles() {
   };
 
   const handleDelete = (id: number) => {
-    if (!confirm("이 기사를 삭제하시겠습니까?")) return;
+    if (!confirm("이 기사를 휴지통으로 이동하시겠습니까?")) return;
     deleteArticle.mutate(
       { id },
       {
-        onSuccess: () => { toast({ title: "삭제되었습니다" }); invalidate(); },
-        onError: () => toast({ title: "삭제 실패", variant: "destructive" }),
+        onSuccess: () => { toast({ title: "휴지통으로 이동했습니다" }); invalidate(); },
+        onError: () => toast({ title: "휴지통 이동 실패", variant: "destructive" }),
       },
     );
   };
@@ -153,7 +154,7 @@ export default function Articles() {
 
   const handleBulkDelete = async () => {
     const ids = visibleIds.filter((id) => selectedIds.has(id));
-    if (ids.length === 0 || !confirm(`선택한 ${ids.length}건의 기사를 삭제하시겠습니까?`)) return;
+    if (ids.length === 0 || !confirm(`선택한 ${ids.length}건의 기사를 휴지통으로 이동하시겠습니까?`)) return;
 
     setIsBulkDeleting(true);
     try {
@@ -166,11 +167,11 @@ export default function Articles() {
       if (failedCount > 0) {
         toast({
           title: "일괄 삭제 일부 실패",
-          description: `${deletedCount}건 삭제 완료 · ${failedCount}건 삭제 실패`,
+          description: `${deletedCount}건 이동 완료 · ${failedCount}건 이동 실패`,
           variant: "destructive",
         });
       } else {
-        toast({ title: "일괄 삭제 완료", description: `${deletedCount}건의 기사가 삭제되었습니다.` });
+        toast({ title: "일괄 휴지통 이동 완료", description: `${deletedCount}건의 기사가 휴지통으로 이동했습니다.` });
       }
     } finally {
       setIsBulkDeleting(false);

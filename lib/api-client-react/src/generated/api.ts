@@ -29,6 +29,7 @@ import type {
   GetTopMediaParams,
   HealthStatus,
   ListArticlesParams,
+  ListTrashArticlesParams,
   MonthlyStat,
   StatsSummary,
   TopMediaItem,
@@ -301,6 +302,103 @@ export const useCreateArticle = <
 };
 
 /**
+ * @summary List deleted articles
+ */
+export const getListTrashArticlesUrl = (params?: ListTrashArticlesParams) => {
+  const normalizedParams = new URLSearchParams();
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? "null" : value.toString());
+    }
+  });
+
+  const stringifiedParams = normalizedParams.toString();
+
+  return stringifiedParams.length > 0
+    ? `/api/articles/trash?${stringifiedParams}`
+    : `/api/articles/trash`;
+};
+
+export const listTrashArticles = async (
+  params?: ListTrashArticlesParams,
+  options?: RequestInit,
+): Promise<ArticleListResponse> => {
+  return customFetch<ArticleListResponse>(getListTrashArticlesUrl(params), {
+    ...options,
+    method: "GET",
+  });
+};
+
+export const getListTrashArticlesQueryKey = (
+  params?: ListTrashArticlesParams,
+) => {
+  return [`/api/articles/trash`, ...(params ? [params] : [])] as const;
+};
+
+export const getListTrashArticlesQueryOptions = <
+  TData = Awaited<ReturnType<typeof listTrashArticles>>,
+  TError = ErrorType<unknown>,
+>(
+  params?: ListTrashArticlesParams,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof listTrashArticles>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey =
+    queryOptions?.queryKey ?? getListTrashArticlesQueryKey(params);
+
+  const queryFn: QueryFunction<
+    Awaited<ReturnType<typeof listTrashArticles>>
+  > = ({ signal }) => listTrashArticles(params, { signal, ...requestOptions });
+
+  return { queryKey, queryFn, ...queryOptions } as UseQueryOptions<
+    Awaited<ReturnType<typeof listTrashArticles>>,
+    TError,
+    TData
+  > & { queryKey: QueryKey };
+};
+
+export type ListTrashArticlesQueryResult = NonNullable<
+  Awaited<ReturnType<typeof listTrashArticles>>
+>;
+export type ListTrashArticlesQueryError = ErrorType<unknown>;
+
+/**
+ * @summary List deleted articles
+ */
+
+export function useListTrashArticles<
+  TData = Awaited<ReturnType<typeof listTrashArticles>>,
+  TError = ErrorType<unknown>,
+>(
+  params?: ListTrashArticlesParams,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof listTrashArticles>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+  const queryOptions = getListTrashArticlesQueryOptions(params, options);
+
+  const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
+    queryKey: QueryKey;
+  };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+/**
  * @summary Update article flags
  */
 export const getUpdateArticleUrl = (id: number) => {
@@ -469,6 +567,90 @@ export const useDeleteArticle = <
   TContext
 > => {
   return useMutation(getDeleteArticleMutationOptions(options));
+};
+
+/**
+ * @summary Restore a deleted article
+ */
+export const getRestoreArticleUrl = (id: number) => {
+  return `/api/articles/${id}/restore`;
+};
+
+export const restoreArticle = async (
+  id: number,
+  options?: RequestInit,
+): Promise<Article> => {
+  return customFetch<Article>(getRestoreArticleUrl(id), {
+    ...options,
+    method: "POST",
+  });
+};
+
+export const getRestoreArticleMutationOptions = <
+  TError = ErrorType<void>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof restoreArticle>>,
+    TError,
+    { id: number },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof restoreArticle>>,
+  TError,
+  { id: number },
+  TContext
+> => {
+  const mutationKey = ["restoreArticle"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof restoreArticle>>,
+    { id: number }
+  > = (props) => {
+    const { id } = props ?? {};
+
+    return restoreArticle(id, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type RestoreArticleMutationResult = NonNullable<
+  Awaited<ReturnType<typeof restoreArticle>>
+>;
+
+export type RestoreArticleMutationError = ErrorType<void>;
+
+/**
+ * @summary Restore a deleted article
+ */
+export const useRestoreArticle = <
+  TError = ErrorType<void>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof restoreArticle>>,
+    TError,
+    { id: number },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof restoreArticle>>,
+  TError,
+  { id: number },
+  TContext
+> => {
+  return useMutation(getRestoreArticleMutationOptions(options));
 };
 
 /**

@@ -1,7 +1,7 @@
 import app from "./app";
 import { logger } from "./lib/logger";
 import { db, crawlJobsTable, articlesTable } from "@workspace/db";
-import { eq, and, lt, count, desc } from "drizzle-orm";
+import { eq, and, lt, count, desc, isNull } from "drizzle-orm";
 import { v4 as uuidv4 } from "uuid";
 import { runCrawlJob } from "./lib/crawlOrchestrator";
 import { loadRuntimeConfig } from "./lib/configStore";
@@ -50,7 +50,10 @@ async function recoverStaleJobs(): Promise<void> {
 // When DB is empty, do NOT auto-crawl — the user should trigger the first crawl manually.
 async function startupCrawlIfNeeded(): Promise<void> {
   try {
-    const [{ total }] = await db.select({ total: count() }).from(articlesTable);
+    const [{ total }] = await db
+      .select({ total: count() })
+      .from(articlesTable)
+      .where(isNull(articlesTable.deletedAt));
 
     if (total === 0) {
       logger.info("DB is empty — skipping auto startup crawl. Use the Crawl page to collect articles.");

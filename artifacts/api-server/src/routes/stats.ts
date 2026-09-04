@@ -1,6 +1,6 @@
 import { Router, type IRouter } from "express";
 import { db, articlesTable } from "@workspace/db";
-import { sql, and, gte, lte, desc } from "drizzle-orm";
+import { sql, and, gte, lte, desc, isNull } from "drizzle-orm";
 import { GetMonthlyStatsQueryParams } from "@workspace/api-zod";
 
 const router: IRouter = Router();
@@ -15,7 +15,7 @@ router.get("/stats/monthly", async (req, res): Promise<void> => {
 
   const { year, startDate, endDate } = parsed.data;
 
-  const conditions = [];
+  const conditions = [isNull(articlesTable.deletedAt)];
 
   // All date calculations use KST (UTC+9) so Korean article dates display correctly
   const KST = `AT TIME ZONE 'Asia/Seoul'`;
@@ -83,6 +83,7 @@ router.get("/stats/years", async (_req, res): Promise<void> => {
       year: sql<number>`EXTRACT(YEAR FROM (${articlesTable.publishedAt} AT TIME ZONE 'Asia/Seoul'))`,
     })
     .from(articlesTable)
+    .where(isNull(articlesTable.deletedAt))
     .orderBy(sql`EXTRACT(YEAR FROM (${articlesTable.publishedAt} AT TIME ZONE 'Asia/Seoul')) DESC`);
 
   const years = rows.map((r) => Number(r.year));
@@ -99,7 +100,7 @@ router.get("/stats/summary", async (req, res): Promise<void> => {
   const rawYear = req.query["year"];
   const year = rawYear != null && rawYear !== "" ? Number(rawYear) : null;
 
-  const conditions = [];
+  const conditions = [isNull(articlesTable.deletedAt)];
   if (year != null && !isNaN(year)) {
     conditions.push(sql`EXTRACT(YEAR FROM (${articlesTable.publishedAt} AT TIME ZONE 'Asia/Seoul')) = ${year}`);
   }
@@ -116,7 +117,8 @@ router.get("/stats/summary", async (req, res): Promise<void> => {
       .where(where),
     db
       .select({ totalAllTime: sql<number>`COUNT(*)` })
-      .from(articlesTable),
+      .from(articlesTable)
+      .where(isNull(articlesTable.deletedAt)),
   ]);
 
   const totalArticles = Number(row?.totalArticles ?? 0);
@@ -139,7 +141,7 @@ router.get("/stats/top-media", async (req, res): Promise<void> => {
   const year = rawYear != null && rawYear !== "" ? Number(rawYear) : null;
   const limit = Math.min(Number(req.query["limit"] ?? 10), 30);
 
-  const conditions = [];
+  const conditions = [isNull(articlesTable.deletedAt)];
   if (year != null && !isNaN(year)) {
     conditions.push(sql`EXTRACT(YEAR FROM (${articlesTable.publishedAt} AT TIME ZONE 'Asia/Seoul')) = ${year}`);
   }
@@ -164,6 +166,7 @@ router.get("/stats/recent", async (_req, res): Promise<void> => {
   const articles = await db
     .select()
     .from(articlesTable)
+    .where(isNull(articlesTable.deletedAt))
     .orderBy(desc(articlesTable.publishedAt))
     .limit(10);
 
@@ -179,6 +182,7 @@ router.get("/stats/recent", async (_req, res): Promise<void> => {
       isSelfPR: a.isSelfPR,
       source: a.source,
       createdAt: a.createdAt.toISOString(),
+      deletedAt: a.deletedAt?.toISOString() ?? null,
     })),
   );
 });

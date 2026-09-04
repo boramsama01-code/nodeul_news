@@ -20,6 +20,8 @@ export interface Article {
   isSelfPR: boolean;
   source: string;
   createdAt: string;
+  /** @nullable */
+  deletedAt?: string | null;
 }
 
 export interface ArticleInput {
@@ -114,6 +116,11 @@ export type ListArticlesParams = {
    * @nullable
    */
   isSelfPR?: boolean | null;
+  page?: number;
+  limit?: number;
+};
+
+export type ListTrashArticlesParams = {
   page?: number;
   limit?: number;
 };

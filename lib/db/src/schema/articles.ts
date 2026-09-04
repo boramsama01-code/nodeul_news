@@ -15,10 +15,12 @@ export const articlesTable = pgTable(
     isSelfPR: boolean("is_self_pr").notNull().default(false),
     source: text("source").notNull().default(""),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    deletedAt: timestamp("deleted_at", { withTimezone: true }),
   },
   (table) => [
     index("articles_published_at_idx").on(table.publishedAt),
     index("articles_media_name_idx").on(table.mediaName),
+    index("articles_deleted_at_idx").on(table.deletedAt),
     unique("articles_url_source_unique").on(table.url, table.source),
   ],
 );
