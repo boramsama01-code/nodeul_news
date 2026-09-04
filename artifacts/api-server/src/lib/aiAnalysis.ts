@@ -2,6 +2,8 @@ import Anthropic from "@anthropic-ai/sdk";
 import { logger } from "./logger";
 import { ruleBasedSentiment } from "./crawlerUtils";
 
+const ANTHROPIC_MODEL = "claude-sonnet-4-6";
+
 let _client: Anthropic | null = null;
 
 function getClient(): Anthropic | null {
@@ -24,7 +26,7 @@ async function analyzeWithAI(title: string, content: string): Promise<boolean> {
   if (!client) throw new Error("ANTHROPIC_API_KEY is not configured");
 
   const response = await client.messages.create({
-    model: "claude-sonnet-4-20250514",
+    model: ANTHROPIC_MODEL,
     max_tokens: 100,
     messages: [
       {
