@@ -53,6 +53,28 @@ function asArticle(
   };
 }
 
+async function withAnthropicFailure<T>(callback: () => Promise<T>): Promise<T> {
+  const previousKey = process.env.ANTHROPIC_API_KEY;
+  const previousFetch = globalThis.fetch;
+  process.env.ANTHROPIC_API_KEY = "test-anthropic-key";
+  globalThis.fetch = async () =>
+    new Response(
+      JSON.stringify({
+        type: "error",
+        error: { type: "authentication_error", message: "simulated Anthropic API failure" },
+      }),
+      { status: 401, headers: { "content-type": "application/json" } },
+    );
+
+  try {
+    return await callback();
+  } finally {
+    if (previousKey === undefined) delete process.env.ANTHROPIC_API_KEY;
+    else process.env.ANTHROPIC_API_KEY = previousKey;
+    globalThis.fetch = previousFetch;
+  }
+}
+
 test("ANTHROPIC_API_KEY가 없으면 부정 키워드만 규칙 기반으로 판정한다", async () => {
   const previousKey = process.env.ANTHROPIC_API_KEY;
   delete process.env.ANTHROPIC_API_KEY;
@@ -81,73 +103,97 @@ test("ANTHROPIC_API_KEY가 없으면 부정 키워드만 규칙 기반으로 판
   }
 });
 
-test("일반 크롤링 저장 경로가 분석 결과를 isNegative에 저장한다", async () => {
-  delete process.env.ANTHROPIC_API_KEY;
-  const inserted: InsertedArticle[] = [];
-  const negative = asArticle(
-    "노들섬 운영 논란",
-    "노들섬 운영에 대한 주민 비판이 이어졌다.",
-    "naver_api",
-  );
-  const ordinary = asArticle(
-    "노들섬 봄꽃 행사 개최",
-    "노들섬에서 시민을 위한 행사가 열렸다.",
-    "naver_api",
-  );
-  const { analyzeArticleSentiment } = await import("./aiAnalysis");
-  const { runCrawlJob } = await import("./crawlOrchestrator");
+test("Anthropic 호출 실패 시 키가 있어도 부정 키워드와 일반 기사를 구분한다", async () => {
+  await withAnthropicFailure(async () => {
+    const { analyzeArticleSentiment, hasAiKey } = await import("./aiAnalysis");
 
-  await runCrawlJob("crawl-test", "2026-01-01", "2026-01-31", {
-    db: createFakeDb(inserted) as unknown as CrawlJobDependencies["db"],
-    analyzeArticleSentiment,
-    crawlNaverNews: async () => [negative, ordinary],
-    crawlNaverWebSearch: async () => [],
-    crawlDaumNews: async () => [],
-    crawlAllSources: async () => [],
+    assert.equal(hasAiKey(), true);
+    assert.equal(
+      await analyzeArticleSentiment(
+        "노들섬 운영 논란",
+        "주민들은 노들섬 운영 문제에 대해 강하게 비판했다.",
+      ),
+      true,
+    );
+    assert.equal(
+      await analyzeArticleSentiment(
+        "노들섬 봄꽃 행사 개최",
+        "노들섬에서 시민을 위한 봄꽃 행사가 열렸다.",
+      ),
+      false,
+    );
   });
-
-  assert.deepEqual(
-    inserted.map(({ title, isNegative }) => ({ title, isNegative })),
-    [
-      { title: negative.title, isNegative: true },
-      { title: ordinary.title, isNegative: false },
-    ],
-  );
 });
 
-test("대량 크롤링의 media_direct 저장 경로가 분석 결과를 isNegative에 저장한다", async () => {
-  delete process.env.ANTHROPIC_API_KEY;
-  const inserted: InsertedArticle[] = [];
-  const negative = asArticle(
-    "노들섬 운영 논란",
-    "노들섬 운영에 대한 주민 비판이 이어졌다.",
-    "naver_web",
-    "네이버(조선일보)",
-  );
-  const ordinary = asArticle(
-    "노들섬 봄꽃 행사 개최",
-    "노들섬에서 시민을 위한 행사가 열렸다.",
-    "naver_web",
-    "네이버(한겨레)",
-  );
-  const { analyzeArticleSentiment } = await import("./aiAnalysis");
-  const { runBulkCrawlJob } = await import("./bulkCrawlOrchestrator");
+test("AI 분석 실패에도 일반 크롤링 저장이 중단되지 않는다", async () => {
+  await withAnthropicFailure(async () => {
+    const inserted: InsertedArticle[] = [];
+    const negative = asArticle(
+      "노들섬 운영 논란",
+      "노들섬 운영에 대한 주민 비판이 이어졌다.",
+      "naver_api",
+    );
+    const ordinary = asArticle(
+      "노들섬 봄꽃 행사 개최",
+      "노들섬에서 시민을 위한 행사가 열렸다.",
+      "naver_api",
+    );
+    const { analyzeArticleSentiment } = await import("./aiAnalysis");
+    const { runCrawlJob } = await import("./crawlOrchestrator");
 
-  await runBulkCrawlJob("bulk-test", "2026-01-01", "2026-01-31", {
-    db: createFakeDb(inserted) as unknown as BulkCrawlJobDependencies["db"],
-    analyzeArticleSentiment,
-    crawlNaverWebSearch: async () => [negative, ordinary],
-    crawlDaumNews: async () => [],
-    crawlAllSources: async () => [],
+    await runCrawlJob("crawl-test", "2026-01-01", "2026-01-31", {
+      db: createFakeDb(inserted) as unknown as CrawlJobDependencies["db"],
+      analyzeArticleSentiment,
+      crawlNaverNews: async () => [negative, ordinary],
+      crawlNaverWebSearch: async () => [],
+      crawlDaumNews: async () => [],
+      crawlAllSources: async () => [],
+    });
+
+    assert.deepEqual(
+      inserted.map(({ title, isNegative }) => ({ title, isNegative })),
+      [
+        { title: negative.title, isNegative: true },
+        { title: ordinary.title, isNegative: false },
+      ],
+    );
   });
+});
 
-  assert.deepEqual(
-    inserted
-      .filter(({ source }) => source === "media_direct")
-      .map(({ title, isNegative, source }) => ({ title, isNegative, source })),
-    [
-      { title: negative.title, isNegative: true, source: "media_direct" },
-      { title: ordinary.title, isNegative: false, source: "media_direct" },
-    ],
-  );
+test("AI 분석 실패에도 대량 크롤링 저장이 중단되지 않는다", async () => {
+  await withAnthropicFailure(async () => {
+    const inserted: InsertedArticle[] = [];
+    const negative = asArticle(
+      "노들섬 운영 논란",
+      "노들섬 운영에 대한 주민 비판이 이어졌다.",
+      "naver_web",
+      "네이버(조선일보)",
+    );
+    const ordinary = asArticle(
+      "노들섬 봄꽃 행사 개최",
+      "노들섬에서 시민을 위한 행사가 열렸다.",
+      "naver_web",
+      "네이버(한겨레)",
+    );
+    const { analyzeArticleSentiment } = await import("./aiAnalysis");
+    const { runBulkCrawlJob } = await import("./bulkCrawlOrchestrator");
+
+    await runBulkCrawlJob("bulk-test", "2026-01-01", "2026-01-31", {
+      db: createFakeDb(inserted) as unknown as BulkCrawlJobDependencies["db"],
+      analyzeArticleSentiment,
+      crawlNaverWebSearch: async () => [negative, ordinary],
+      crawlDaumNews: async () => [],
+      crawlAllSources: async () => [],
+    });
+
+    assert.deepEqual(
+      inserted
+        .filter(({ source }) => source === "media_direct")
+        .map(({ title, isNegative, source }) => ({ title, isNegative, source })),
+      [
+        { title: negative.title, isNegative: true, source: "media_direct" },
+        { title: ordinary.title, isNegative: false, source: "media_direct" },
+      ],
+    );
+  });
 });
