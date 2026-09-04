@@ -12,9 +12,18 @@ import {
 import { analyzeArticleSentiment } from "./aiAnalysis";
 import { crawlAllSources, crawlNaverNews, crawlDaumNews, crawlNaverWebSearch } from "./crawlerSources";
 
-async function loadExistingSet(): Promise<Set<string>> {
+export interface CrawlJobDependencies {
+  db?: typeof db;
+  analyzeArticleSentiment?: typeof analyzeArticleSentiment;
+  crawlAllSources?: typeof crawlAllSources;
+  crawlNaverNews?: typeof crawlNaverNews;
+  crawlDaumNews?: typeof crawlDaumNews;
+  crawlNaverWebSearch?: typeof crawlNaverWebSearch;
+}
+
+async function loadExistingSet(database: typeof db): Promise<Set<string>> {
   const existingSet = new Set<string>();
-  const existing = await db
+  const existing = await database
     .select({
       url: articlesTable.url,
       title: articlesTable.title,
@@ -37,12 +46,21 @@ export async function runCrawlJob(
   jobId: string,
   startDate: string,
   endDate: string,
+  dependencies: CrawlJobDependencies = {},
 ): Promise<void> {
-  const existingSet = await loadExistingSet();
+  const database = dependencies.db ?? db;
+  const analyze = dependencies.analyzeArticleSentiment ?? analyzeArticleSentiment;
+  const crawlSources = {
+    all: dependencies.crawlAllSources ?? crawlAllSources,
+    naver: dependencies.crawlNaverNews ?? crawlNaverNews,
+    daum: dependencies.crawlDaumNews ?? crawlDaumNews,
+    naverWeb: dependencies.crawlNaverWebSearch ?? crawlNaverWebSearch,
+  };
+  const existingSet = await loadExistingSet(database);
   let totalCollected = 0;
   let totalDuplicates = 0;
 
-  await db
+  await database
     .update(crawlJobsTable)
     .set({ currentSource: "네이버API + 다음API + RSS 병렬 수집 중…", progress: 5 })
     .where(eq(crawlJobsTable.id, jobId));
@@ -50,10 +68,10 @@ export async function runCrawlJob(
   logger.info({ jobId }, "Starting parallel crawl: Naver API + Daum API + RSS sources");
 
   const [naverApiRes, naverWebRes, daumRes, rssRes] = await Promise.allSettled([
-    crawlNaverNews(startDate, endDate),
-    crawlNaverWebSearch(startDate, endDate),
-    crawlDaumNews(startDate, endDate),
-    crawlAllSources(startDate, endDate),
+    crawlSources.naver(startDate, endDate),
+    crawlSources.naverWeb(startDate, endDate),
+    crawlSources.daum(startDate, endDate),
+    crawlSources.all(startDate, endDate),
   ]);
 
   const naverApiResults = naverApiRes.status === "fulfilled" ? naverApiRes.value : [];
@@ -68,7 +86,7 @@ export async function runCrawlJob(
 
   const articles: ArticleData[] = [...naverApiResults, ...naverWebResults, ...daumResults, ...rssResults];
 
-  await db
+  await database
     .update(crawlJobsTable)
     .set({
       currentSource: "중복 제거 및 DB 저장 중…",
@@ -91,13 +109,13 @@ export async function runCrawlJob(
 
     addToSet(article.url, article.title, article.publishedAt, existingSet, article.source);
 
-    const isNegative = await analyzeArticleSentiment(
+    const isNegative = await analyze(
       article.title,
       article.content,
     );
 
     try {
-      await db.insert(articlesTable).values({
+      await database.insert(articlesTable).values({
         title: article.title,
         content: article.content,
         url: article.url,
@@ -130,14 +148,14 @@ export async function runCrawlJob(
         95,
         60 + Math.round((totalCollected / Math.max(articles.length, 1)) * 35),
       );
-      await db
+      await database
         .update(crawlJobsTable)
         .set({ collected: totalCollected, duplicates: totalDuplicates, progress })
         .where(eq(crawlJobsTable.id, jobId));
     }
   }
 
-  await db
+  await database
     .update(crawlJobsTable)
     .set({
       status: "done",

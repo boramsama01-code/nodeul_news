@@ -13,6 +13,15 @@ import {
 import { analyzeArticleSentiment } from "./aiAnalysis";
 import { crawlAllSources, crawlNaverNews, crawlDaumNews, crawlNaverWebSearch } from "./crawlerSources";
 
+export interface BulkCrawlJobDependencies {
+  db?: typeof db;
+  analyzeArticleSentiment?: typeof analyzeArticleSentiment;
+  crawlAllSources?: typeof crawlAllSources;
+  crawlNaverNews?: typeof crawlNaverNews;
+  crawlDaumNews?: typeof crawlDaumNews;
+  crawlNaverWebSearch?: typeof crawlNaverWebSearch;
+}
+
 // Return "YYYY-MM-DD" strings for each month boundary (no timezone conversion here;
 // crawlerSources applies KST internally when it parses these strings).
 function getMonthRanges(
@@ -45,9 +54,9 @@ function getMonthRanges(
   return ranges;
 }
 
-async function loadExistingSet(): Promise<Set<string>> {
+async function loadExistingSet(database: typeof db): Promise<Set<string>> {
   const existingSet = new Set<string>();
-  const existing = await db
+  const existing = await database
     .select({
       url: articlesTable.url,
       title: articlesTable.title,
@@ -70,13 +79,22 @@ export async function runBulkCrawlJob(
   jobId: string,
   startDate: string,
   endDate: string,
+  dependencies: BulkCrawlJobDependencies = {},
 ): Promise<void> {
   const months = getMonthRanges(startDate, endDate);
   const totalMonths = months.length;
 
   logger.info({ jobId, totalMonths, startDate, endDate }, "Starting bulk crawl");
 
-  const existingSet = await loadExistingSet();
+  const database = dependencies.db ?? db;
+  const analyze = dependencies.analyzeArticleSentiment ?? analyzeArticleSentiment;
+  const crawlSources = {
+    all: dependencies.crawlAllSources ?? crawlAllSources,
+    naver: dependencies.crawlNaverNews ?? crawlNaverNews,
+    daum: dependencies.crawlDaumNews ?? crawlDaumNews,
+    naverWeb: dependencies.crawlNaverWebSearch ?? crawlNaverWebSearch,
+  };
+  const existingSet = await loadExistingSet(database);
   // media_direct 중복 관리: "제목__언론사명" 완전일치 기준 (전체 크롤 범위 유지)
   const mediaDirectSet = new Set<string>();
   const sentimentCache = new Map<string, Promise<boolean>>();
@@ -88,7 +106,7 @@ export async function runBulkCrawlJob(
     const cached = sentimentCache.get(key);
     if (cached) return cached;
 
-    const analysis = analyzeArticleSentiment(article.title, article.content);
+    const analysis = analyze(article.title, article.content);
     sentimentCache.set(key, analysis);
     return analysis;
   };
@@ -97,7 +115,7 @@ export async function runBulkCrawlJob(
     const month = months[i]!;
     const monthProgress = Math.round((i / totalMonths) * 90);
 
-    await db
+    await database
       .update(crawlJobsTable)
       .set({
         currentSource: `[${i + 1}/${totalMonths}] ${month.label} 수집 중…`,
@@ -111,9 +129,9 @@ export async function runBulkCrawlJob(
 
     const [naverApiRes, naverWebRes, daumRes, rssRes] = await Promise.allSettled([
       Promise.resolve([] as ArticleData[]), // naver_api 제외: start<=1000 제약으로 과거 수집 불가, naver_web으로 대체
-      crawlNaverWebSearch(month.start, month.end),
-      crawlDaumNews(month.start, month.end),
-      crawlAllSources(month.start, month.end),
+      crawlSources.naverWeb(month.start, month.end),
+      crawlSources.daum(month.start, month.end),
+      crawlSources.all(month.start, month.end),
     ]);
 
     const naverApiResults = naverApiRes.status === "fulfilled" ? naverApiRes.value : [];
@@ -143,7 +161,7 @@ export async function runBulkCrawlJob(
       const isNegative = await getSentiment(article);
 
       try {
-        await db.insert(articlesTable).values({
+        await database.insert(articlesTable).values({
           title: article.title,
           content: article.content,
           url: article.url,
@@ -179,7 +197,7 @@ export async function runBulkCrawlJob(
       mediaDirectSet.add(fp);
       try {
         const isNegative = await getSentiment(article);
-        await db.insert(articlesTable).values({
+        await database.insert(articlesTable).values({
           title: article.title,
           content: article.content,
           url: article.url,
@@ -198,7 +216,7 @@ export async function runBulkCrawlJob(
     }
 
     const progressAfterMonth = Math.round(((i + 1) / totalMonths) * 90);
-    await db
+    await database
       .update(crawlJobsTable)
       .set({
         collected: totalCollected,
@@ -214,7 +232,7 @@ export async function runBulkCrawlJob(
     }
   }
 
-  await db
+  await database
     .update(crawlJobsTable)
     .set({
       status: "done",
