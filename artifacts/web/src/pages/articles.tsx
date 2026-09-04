@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from "react";
+import React, { useState, useCallback, useEffect } from "react";
 import {
   useListArticles,
   getListArticlesQueryKey,
@@ -48,6 +48,8 @@ export default function Articles() {
   const [filterSelfPR, setFilterSelfPR] = useState<boolean | undefined>(undefined);
   const [page, setPage] = useState(1);
   const [showAddModal, setShowAddModal] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
+  const [isBulkDeleting, setIsBulkDeleting] = useState(false);
 
   const today = new Date().toISOString().split("T")[0]!;
   const firstOfYear = `${new Date().getFullYear()}-01-01`;
@@ -105,6 +107,10 @@ export default function Articles() {
     queryClient.invalidateQueries({ queryKey: getListArticlesQueryKey() });
   }, [queryClient]);
 
+  useEffect(() => {
+    setSelectedIds(new Set());
+  }, [page, year, month, keyword, filterNegative, filterSelfPR]);
+
   const handleToggle = (id: number, field: "isNegative" | "isSelfPR", val: boolean) => {
     updateArticle.mutate(
       { id, data: { [field]: val } },
@@ -121,6 +127,54 @@ export default function Articles() {
         onError: () => toast({ title: "삭제 실패", variant: "destructive" }),
       },
     );
+  };
+
+  const visibleIds = data?.data?.map((article) => article.id) ?? [];
+  const selectedVisibleCount = visibleIds.filter((id) => selectedIds.has(id)).length;
+  const allVisibleSelected = visibleIds.length > 0 && selectedVisibleCount === visibleIds.length;
+  const someVisibleSelected = selectedVisibleCount > 0 && !allVisibleSelected;
+
+  const toggleSelected = (id: number, checked: boolean) => {
+    setSelectedIds((current) => {
+      const next = new Set(current);
+      if (checked) next.add(id);
+      else next.delete(id);
+      return next;
+    });
+  };
+
+  const toggleSelectAllVisible = (checked: boolean) => {
+    setSelectedIds((current) => {
+      const next = new Set(current);
+      visibleIds.forEach((id) => (checked ? next.add(id) : next.delete(id)));
+      return next;
+    });
+  };
+
+  const handleBulkDelete = async () => {
+    const ids = visibleIds.filter((id) => selectedIds.has(id));
+    if (ids.length === 0 || !confirm(`선택한 ${ids.length}건의 기사를 삭제하시겠습니까?`)) return;
+
+    setIsBulkDeleting(true);
+    try {
+      const results = await Promise.allSettled(ids.map((id) => deleteArticle.mutateAsync({ id })));
+      const failedCount = results.filter((result) => result.status === "rejected").length;
+      const deletedCount = ids.length - failedCount;
+
+      setSelectedIds(new Set());
+      invalidate();
+      if (failedCount > 0) {
+        toast({
+          title: "일괄 삭제 일부 실패",
+          description: `${deletedCount}건 삭제 완료 · ${failedCount}건 삭제 실패`,
+          variant: "destructive",
+        });
+      } else {
+        toast({ title: "일괄 삭제 완료", description: `${deletedCount}건의 기사가 삭제되었습니다.` });
+      }
+    } finally {
+      setIsBulkDeleting(false);
+    }
   };
 
   const applyFilters = () => { setPage(1); refetch(); };
@@ -257,6 +311,18 @@ export default function Articles() {
             <CardTitle className="text-sm text-muted-foreground font-normal">
               총 <span className="font-bold text-foreground">{data?.total ?? 0}</span>건
             </CardTitle>
+            {selectedVisibleCount > 0 && (
+              <Button
+                size="sm"
+                variant="destructive"
+                className="h-8 gap-1.5"
+                onClick={handleBulkDelete}
+                disabled={isBulkDeleting}
+              >
+                {isBulkDeleting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Trash2 className="w-3.5 h-3.5" />}
+                {isBulkDeleting ? "삭제 중..." : `선택 삭제 (${selectedVisibleCount})`}
+              </Button>
+            )}
           </div>
         </CardHeader>
         <CardContent className="p-0">
@@ -271,6 +337,14 @@ export default function Articles() {
               <table className="w-full text-sm">
                 <thead>
                   <tr className="border-b bg-muted/40 text-muted-foreground">
+                    <th className="px-4 py-2.5 text-center font-medium w-12">
+                      <Checkbox
+                        aria-label="현재 페이지 기사 전체 선택"
+                        checked={allVisibleSelected ? true : someVisibleSelected ? "indeterminate" : false}
+                        onCheckedChange={(checked) => toggleSelectAllVisible(checked === true)}
+                        disabled={visibleIds.length === 0 || isBulkDeleting}
+                      />
+                    </th>
                     <th className="px-4 py-2.5 text-left font-medium whitespace-nowrap">게시일</th>
                     <th className="px-4 py-2.5 text-left font-medium whitespace-nowrap">매체명</th>
                     <th className="px-4 py-2.5 text-left font-medium">제목 / 미리보기</th>
@@ -284,6 +358,14 @@ export default function Articles() {
                     const preview = getPreview(article.content, article.title);
                     return (
                       <tr key={article.id} className="border-b hover:bg-muted/20 transition-colors">
+                        <td className="px-4 py-2.5 text-center">
+                          <Checkbox
+                            aria-label={`${article.title} 선택`}
+                            checked={selectedIds.has(article.id)}
+                            onCheckedChange={(checked) => toggleSelected(article.id, checked === true)}
+                            disabled={isBulkDeleting}
+                          />
+                        </td>
                         <td className="px-4 py-2.5 text-xs text-muted-foreground whitespace-nowrap">
                           {new Date(article.publishedAt).toLocaleDateString("ko-KR", { year: "2-digit", month: "2-digit", day: "2-digit" })}
                         </td>
@@ -337,7 +419,7 @@ export default function Articles() {
                   })}
                   {(!data?.data || data.data.length === 0) && (
                     <tr>
-                      <td colSpan={6} className="px-4 py-12 text-center text-muted-foreground">
+                      <td colSpan={7} className="px-4 py-12 text-center text-muted-foreground">
                         기사가 없습니다.
                       </td>
                     </tr>
