@@ -62,14 +62,18 @@ async function loadExistingSet(database: typeof db): Promise<Set<string>> {
       title: articlesTable.title,
       publishedAt: articlesTable.publishedAt,
       source: articlesTable.source,
+      mediaName: articlesTable.mediaName,
     })
     .from(articlesTable);
 
   for (const a of existing) {
     const src = a.source ?? "";
-    existingSet.add(`${src}__` + a.url.toLowerCase().trim().replace(/\/$/, ""));
+    const sourceKey = src === "google_news_rss" && a.mediaName?.trim()
+      ? `${src}__${a.mediaName.trim().replace(/\s+/g, "")}`
+      : src;
+    existingSet.add(`${sourceKey}__` + a.url.toLowerCase().trim().replace(/\/$/, ""));
     const dateStr = a.publishedAt.toISOString().split("T")[0];
-    existingSet.add(`${src}__${a.title.trim().replace(/\s+/g, "")}__${dateStr}`);
+    existingSet.add(`${sourceKey}__${a.title.trim().replace(/\s+/g, "")}__${dateStr}`);
   }
 
   return existingSet;
@@ -151,12 +155,12 @@ export async function runBulkCrawlJob(
     for (const article of articles) {
       if (!isRelevant(article.title, article.content)) continue;
       if (!isValidUrl(article.url)) continue;
-      if (isDuplicate(article.url, article.title, article.publishedAt, existingSet, article.source)) {
+      if (isDuplicate(article.url, article.title, article.publishedAt, existingSet, article.source, article.mediaName)) {
         totalDuplicates++;
         continue;
       }
 
-      addToSet(article.url, article.title, article.publishedAt, existingSet, article.source);
+      addToSet(article.url, article.title, article.publishedAt, existingSet, article.source, article.mediaName);
 
       const isNegative = await getSentiment(article);
 

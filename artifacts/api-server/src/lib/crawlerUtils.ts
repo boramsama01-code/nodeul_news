@@ -215,30 +215,53 @@ export function extractPressName(mediaName: string): string {
   return m ? m[1] : mediaName;
 }
 
-// Deduplication check — URL-based + title+date fingerprint
-// Also handles Google News vs original URL deduplication
+// Deduplication check — URL-based + title+date fingerprint.
+// Google News can publish the same headline on behalf of multiple presses, so
+// its press label is part of both keys. Other sources keep the historical
+// source+URL/title+date behavior.
+function dedupSourceKey(source: string, mediaName?: string): string {
+  if (source === "google_news_rss" && mediaName?.trim()) {
+    return `${source}__${mediaName.trim().replace(/\s+/g, "")}`;
+  }
+  return source;
+}
+
+function titleFingerprint(title: string): string {
+  return title.trim().replace(/\s+/g, "");
+}
+
 export function isDuplicate(
   url: string,
   title: string,
   publishedAt: Date,
   existingSet: Set<string>,
   source = "",
+  mediaName?: string,
 ): boolean {
-  const normalizedUrl = `${source}__` + url.toLowerCase().trim().replace(/\/$/, "");
+  const sourceKey = dedupSourceKey(source, mediaName);
+  const normalizedUrl = `${sourceKey}__` + url.toLowerCase().trim().replace(/\/$/, "");
   if (existingSet.has(normalizedUrl)) return true;
 
   const dateStr = publishedAt.toISOString().split("T")[0];
-  const fingerprint = `${source}__${title.trim().replace(/\s+/g, "")}__${dateStr}`;
+  const fingerprint = `${sourceKey}__${titleFingerprint(title)}__${dateStr}`;
   if (existingSet.has(fingerprint)) return true;
 
   return false;
 }
 
 // Add URL and fingerprint to existing set
-export function addToSet(url: string, title: string, publishedAt: Date, set: Set<string>, source = ""): void {
-  set.add(`${source}__` + url.toLowerCase().trim().replace(/\/$/, ""));
+export function addToSet(
+  url: string,
+  title: string,
+  publishedAt: Date,
+  set: Set<string>,
+  source = "",
+  mediaName?: string,
+): void {
+  const sourceKey = dedupSourceKey(source, mediaName);
+  set.add(`${sourceKey}__` + url.toLowerCase().trim().replace(/\/$/, ""));
   const dateStr = publishedAt.toISOString().split("T")[0];
-  set.add(`${source}__${title.trim().replace(/\s+/g, "")}__${dateStr}`);
+  set.add(`${sourceKey}__${titleFingerprint(title)}__${dateStr}`);
 }
 
 // Strip HTML tags
