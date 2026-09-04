@@ -10,6 +10,7 @@ import {
   extractPressName,
   ArticleData,
 } from "./crawlerUtils";
+import { analyzeArticleSentiment } from "./aiAnalysis";
 import { crawlAllSources, crawlNaverNews, crawlDaumNews, crawlNaverWebSearch } from "./crawlerSources";
 
 // Return "YYYY-MM-DD" strings for each month boundary (no timezone conversion here;
@@ -78,8 +79,19 @@ export async function runBulkCrawlJob(
   const existingSet = await loadExistingSet();
   // media_direct 중복 관리: "제목__언론사명" 완전일치 기준 (전체 크롤 범위 유지)
   const mediaDirectSet = new Set<string>();
+  const sentimentCache = new Map<string, Promise<boolean>>();
   let totalCollected = 0;
   let totalDuplicates = 0;
+
+  const getSentiment = (article: ArticleData): Promise<boolean> => {
+    const key = `${article.title}\u0000${article.content}`;
+    const cached = sentimentCache.get(key);
+    if (cached) return cached;
+
+    const analysis = analyzeArticleSentiment(article.title, article.content);
+    sentimentCache.set(key, analysis);
+    return analysis;
+  };
 
   for (let i = 0; i < months.length; i++) {
     const month = months[i]!;
@@ -128,7 +140,7 @@ export async function runBulkCrawlJob(
 
       addToSet(article.url, article.title, article.publishedAt, existingSet, article.source);
 
-      const isNegative = false; // 자동 판단 비활성화 — 수동으로만 설정
+      const isNegative = await getSentiment(article);
 
       try {
         await db.insert(articlesTable).values({
@@ -166,13 +178,14 @@ export async function runBulkCrawlJob(
       if (mediaDirectSet.has(fp)) continue;
       mediaDirectSet.add(fp);
       try {
+        const isNegative = await getSentiment(article);
         await db.insert(articlesTable).values({
           title: article.title,
           content: article.content,
           url: article.url,
           publishedAt: article.publishedAt,
           mediaName: press,
-          isNegative: false,
+          isNegative,
           isSelfPR: article.isSelfPR,
           source: "media_direct",
         });

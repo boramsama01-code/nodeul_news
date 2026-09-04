@@ -9,6 +9,7 @@ import {
   isValidUrl,
   ArticleData,
 } from "./crawlerUtils";
+import { analyzeArticleSentiment } from "./aiAnalysis";
 import { crawlAllSources, crawlNaverNews, crawlDaumNews, crawlNaverWebSearch } from "./crawlerSources";
 
 async function loadExistingSet(): Promise<Set<string>> {
@@ -90,7 +91,10 @@ export async function runCrawlJob(
 
     addToSet(article.url, article.title, article.publishedAt, existingSet, article.source);
 
-    const isNegative = false; // 자동 판단 비활성화 — 수동으로만 설정
+    const isNegative = await analyzeArticleSentiment(
+      article.title,
+      article.content,
+    );
 
     try {
       await db.insert(articlesTable).values({
