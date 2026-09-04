@@ -3,7 +3,7 @@ import axios, { AxiosResponse } from "axios";
 import * as cheerio from "cheerio";
 import { logger } from "./logger";
 import { isRelevant, stripHtml, isValidUrl, resolveMediaName, resolveMediaNameStrict, ArticleData } from "./crawlerUtils";
-import { NEWS_SOURCES, NewsSource } from "./rssFeedList";
+import { NEWS_SOURCES, GOOGLE_NEWS_SOURCES, NewsSource } from "./rssFeedList";
 
 const TIMEOUT_MS = 30000;
 
@@ -306,6 +306,27 @@ export async function crawlAllSources(
     }
   }
 
+  return all;
+}
+
+// Google News-only crawl used for repairing historical imports without
+// re-running the other portal and direct RSS sources.
+export async function crawlGoogleNews(
+  startDate: string,
+  endDate: string,
+): Promise<ArticleData[]> {
+  const settled = await Promise.allSettled(
+    GOOGLE_NEWS_SOURCES.map((source) => crawlSource(source, startDate, endDate)),
+  );
+
+  const all: ArticleData[] = [];
+  for (const result of settled) {
+    if (result.status === "fulfilled") {
+      all.push(...result.value);
+    }
+  }
+
+  logger.info({ startDate, endDate, total: all.length }, "Google News-only crawl complete");
   return all;
 }
 
