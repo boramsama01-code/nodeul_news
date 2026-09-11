@@ -70,7 +70,7 @@ export function Layout({ children }: LayoutProps) {
         </div>
         <div className="px-4 py-4 border-t border-sidebar-border/60">
           <div className="text-[10px] text-sidebar-foreground/40 text-center">
-            매일 자정 자동 수집
+            독립 프로그램 · 자동 수집
           </div>
         </div>
       </aside>

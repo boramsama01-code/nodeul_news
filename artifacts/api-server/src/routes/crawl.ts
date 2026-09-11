@@ -1,7 +1,8 @@
 import { Router, type IRouter } from "express";
 import { v4 as uuidv4 } from "uuid";
 import { db, crawlJobsTable } from "@workspace/db";
-import { eq } from "drizzle-orm";
+import { eq, desc } from "drizzle-orm";
+import { validateDateRange } from "../lib/crawlRuntime";
 import {
   StartCrawlBody,
   StartBulkCrawlBody,
@@ -12,6 +13,10 @@ import { runBulkCrawlJob } from "../lib/bulkCrawlOrchestrator";
 import { logger } from "../lib/logger";
 
 const router: IRouter = Router();
+router.get("/crawl/recent", async (_req, res) => {
+  const jobs = await db.select().from(crawlJobsTable).orderBy(desc(crawlJobsTable.createdAt)).limit(10);
+  res.json(jobs);
+});
 
 // POST /crawl/start
 router.post("/crawl/start", async (req, res): Promise<void> => {
@@ -22,6 +27,8 @@ router.post("/crawl/start", async (req, res): Promise<void> => {
   }
 
   const { startDate, endDate } = parsed.data;
+  try { validateDateRange(startDate, endDate); }
+  catch (err) { res.status(400).json({ error: String(err) }); return; }
   const jobId = uuidv4();
 
   try {
@@ -64,6 +71,8 @@ router.post("/crawl/bulk-start", async (req, res): Promise<void> => {
   }
 
   const { startDate, endDate } = parsed.data;
+  try { validateDateRange(startDate, endDate); }
+  catch (err) { res.status(400).json({ error: String(err) }); return; }
   const jobId = uuidv4();
 
   try {

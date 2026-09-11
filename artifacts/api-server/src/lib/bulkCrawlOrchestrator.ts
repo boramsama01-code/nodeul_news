@@ -1,6 +1,8 @@
 import { db } from "@workspace/db";
 import { articlesTable, crawlJobsTable } from "@workspace/db";
 import { eq } from "drizzle-orm";
+import { withCrawlLock } from "./crawlLock";
+import { crawlWarnings, validateDateRange, warnSource } from "./crawlRuntime";
 import { logger } from "./logger";
 import {
   isRelevant,
@@ -85,6 +87,17 @@ export async function runBulkCrawlJob(
   endDate: string,
   dependencies: BulkCrawlJobDependencies = {},
 ): Promise<void> {
+  validateDateRange(startDate, endDate);
+  const run = () => crawlWarnings.run([], () => executeBulkCrawlJob(jobId, startDate, endDate, dependencies));
+  return dependencies.db ? run() : withCrawlLock(run, jobId);
+}
+
+async function executeBulkCrawlJob(
+  jobId: string,
+  startDate: string,
+  endDate: string,
+  dependencies: BulkCrawlJobDependencies = {},
+): Promise<void> {
   const months = getMonthRanges(startDate, endDate);
   const totalMonths = months.length;
 
@@ -104,6 +117,8 @@ export async function runBulkCrawlJob(
   const sentimentCache = new Map<string, Promise<boolean>>();
   let totalCollected = 0;
   let totalDuplicates = 0;
+  let insertFailures = 0;
+  let candidates = 0;
 
   const getSentiment = (article: ArticleData): Promise<boolean> => {
     const key = `${article.title}\u0000${article.content}`;
@@ -149,6 +164,10 @@ export async function runBulkCrawlJob(
     if (rssRes.status      === "rejected") logger.error({ err: rssRes.reason,      jobId, month: month.label }, "RSS crawl failed for month");
 
     const articles: ArticleData[] = [...naverApiResults, ...naverWebResults, ...daumResults, ...rssResults];
+    candidates += articles.length;
+    for (const [source, result] of [["네이버 웹", naverWebRes], ["다음", daumRes], ["RSS", rssRes]] as const) {
+      if (result.status === "rejected") warnSource(source, `${month.label} 수집 실패`);
+    }
 
     logger.info({ jobId, month: month.label, naverApi: naverApiResults.length, naverWeb: naverWebResults.length, daum: daumResults.length, rss: rssResults.length, count: articles.length }, "Bulk crawl: deduplicating month");
 
@@ -159,8 +178,6 @@ export async function runBulkCrawlJob(
         totalDuplicates++;
         continue;
       }
-
-      addToSet(article.url, article.title, article.publishedAt, existingSet, article.source, article.mediaName);
 
       const isNegative = await getSentiment(article);
 
@@ -176,48 +193,20 @@ export async function runBulkCrawlJob(
           source: article.source,
         });
         totalCollected++;
+        addToSet(article.url, article.title, article.publishedAt, existingSet, article.source, article.mediaName);
       } catch (err: unknown) {
-        const code = (err as { code?: string })?.code;
+        const error = err as { code?: string; cause?: { code?: string } };
+        const code = error.code ?? error.cause?.code;
         if (code === "23505" || code === "P2002") {
           totalDuplicates++;
         } else {
+          insertFailures++;
           logger.error({ err }, "Failed to insert article");
         }
       }
     }
 
-    // media_direct 파생: 포털 수집분 → 언론사 원게재 row (제목+언론사 완전일치 dedup)
-    // 우선순위 naver_web > daum_web > google_news_rss (대표 URL 선택용)
-    const mdPriority: Record<string, number> = { naver_web: 0, daum_web: 1, google_news_rss: 2 };
-    const mdSorted = [...articles].sort(
-      (a, b) => (mdPriority[a.source] ?? 9) - (mdPriority[b.source] ?? 9),
-    );
-    for (const article of mdSorted) {
-      if (!isRelevant(article.title, article.content)) continue;
-      if (!isValidUrl(article.url)) continue;
-      const press = extractPressName(article.mediaName);
-      const fp = article.title + "__" + press;
-      if (mediaDirectSet.has(fp)) continue;
-      mediaDirectSet.add(fp);
-      try {
-        const isNegative = await getSentiment(article);
-        await database.insert(articlesTable).values({
-          title: article.title,
-          content: article.content,
-          url: article.url,
-          publishedAt: article.publishedAt,
-          mediaName: press,
-          isNegative,
-          isSelfPR: article.isSelfPR,
-          source: "media_direct",
-        });
-        totalCollected++;
-      } catch (err: unknown) {
-        const code = (err as { code?: string })?.code;
-        if (code === "23505" || code === "P2002") totalDuplicates++;
-        else logger.error({ err }, "Failed to insert media_direct");
-      }
-    }
+    // Preserve the actual collection source; do not synthesize publisher rows.
 
     const progressAfterMonth = Math.round(((i + 1) / totalMonths) * 90);
     await database
@@ -239,12 +228,13 @@ export async function runBulkCrawlJob(
   await database
     .update(crawlJobsTable)
     .set({
-      status: "done",
+      status: insertFailures > 0 || (candidates === 0 && (crawlWarnings.getStore()?.length ?? 0) > 0) ? "error" : "done",
       progress: 100,
       currentSource: "",
       total: totalCollected + totalDuplicates,
       collected: totalCollected,
       duplicates: totalDuplicates,
+      error: [`후보 ${candidates}, 저장 실패 ${insertFailures}`, ...(crawlWarnings.getStore() ?? [])].join("\n"),
     })
     .where(eq(crawlJobsTable.id, jobId));
 

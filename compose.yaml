@@ -1,0 +1,49 @@
+services:
+  db:
+    image: postgres:16-bookworm
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: nodeul_news
+      POSTGRES_USER: nodeul
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./deploy/init.sql:/docker-entrypoint-initdb.d/001-schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nodeul -d nodeul_news"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+  web:
+    build: .
+    image: nodeul-news:local
+    restart: unless-stopped
+    environment: &app_environment
+      DATABASE_URL: postgresql://nodeul:${POSTGRES_PASSWORD}@db:5432/nodeul_news
+      NAVER_CLIENT_ID: ${NAVER_CLIENT_ID:-}
+      NAVER_CLIENT_SECRET: ${NAVER_CLIENT_SECRET:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      APP_PASSWORD: ${APP_PASSWORD:-}
+      CRAWL_INTERVAL_MINUTES: ${CRAWL_INTERVAL_MINUTES:-30}
+      RUN_SCHEDULER: "false"
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${WEB_PORT:-8080}:8080"
+    volumes:
+      - app_data:/app/data
+    depends_on:
+      db:
+        condition: service_healthy
+  worker:
+    build: .
+    image: nodeul-news:local
+    restart: unless-stopped
+    command: ["node", "--enable-source-maps", "dist/worker.mjs"]
+    environment: *app_environment
+    volumes:
+      - app_data:/app/data
+    depends_on:
+      db:
+        condition: service_healthy
+volumes:
+  postgres_data:
+  app_data:

@@ -4,6 +4,7 @@ import * as cheerio from "cheerio";
 import { logger } from "./logger";
 import { isRelevant, stripHtml, isValidUrl, resolveMediaName, resolveMediaNameStrict, ArticleData } from "./crawlerUtils";
 import { NEWS_SOURCES, GOOGLE_NEWS_SOURCES, NewsSource } from "./rssFeedList";
+import { googleFeedUrl, kstDate, mapConcurrent, warnSource, validateDateRange } from "./crawlRuntime";
 
 const TIMEOUT_MS = 30000;
 
@@ -14,15 +15,6 @@ const rssParser = new Parser({
   },
 });
 
-function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
-  return Promise.race([
-    promise,
-    new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error(`Timeout after ${ms}ms`)), ms),
-    ),
-  ]);
-}
-
 // 배포 환경의 간헐적 네트워크 실패(timeout 등)를 흡수하는 재시도 래퍼
 async function withRetry<T>(fn: () => Promise<T>, retries = 2, delayMs = 1500): Promise<T> {
   let lastErr: unknown;
@@ -31,6 +23,8 @@ async function withRetry<T>(fn: () => Promise<T>, retries = 2, delayMs = 1500): 
       return await fn();
     } catch (err) {
       lastErr = err;
+      const status = (err as { response?: { status?: number } })?.response?.status;
+      if (status && status >= 400 && status < 500 && status !== 429) throw err;
       if (attempt < retries) await new Promise((r) => setTimeout(r, delayMs * (attempt + 1)));
     }
   }
@@ -41,7 +35,7 @@ async function withRetry<T>(fn: () => Promise<T>, retries = 2, delayMs = 1500): 
 function kstStart(dateStr: string): Date { return new Date(dateStr + "T00:00:00+09:00"); }
 function kstEnd(dateStr: string): Date   { return new Date(dateStr + "T23:59:59.999+09:00"); }
 
-async function crawlSource(
+export async function crawlSource(
   source: NewsSource,
   startDate: string,
   endDate: string,
@@ -52,7 +46,8 @@ async function crawlSource(
   const results: ArticleData[] = [];
 
   try {
-    const feed = await withTimeout(rssParser.parseURL(source.url), TIMEOUT_MS);
+    const url = source.method === "google_news_rss" ? googleFeedUrl(source.url, startDate, endDate) : source.url;
+    const feed = await withRetry(() => rssParser.parseURL(url), 1);
 
     for (const item of feed.items || []) {
       try {
@@ -79,9 +74,11 @@ async function crawlSource(
           }
         }
 
-        const pubDate = item.pubDate || item.isoDate
-          ? new Date(item.pubDate || item.isoDate || "")
-          : new Date();
+        const pubDate = new Date(item.pubDate || item.isoDate || "");
+        if (!Number.isFinite(pubDate.getTime())) {
+          warnSource(source.name, "발행일이 없거나 잘못된 RSS 항목 제외");
+          continue;
+        }
 
         let finalTitle = title;
         let mediaName: string;
@@ -116,9 +113,16 @@ async function crawlSource(
     }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    logger.debug(`[SKIP] ${source.name} (${source.method}): ${msg}`);
+    warnSource(source.name, msg);
+    if (source.method === "rss_direct") {
+      warnSource(source.name, "직접 RSS 실패: 구글뉴스의 해당 언론사 검색으로 보완합니다.");
+      const fallback = new URL("https://news.google.com/rss/search?hl=ko&gl=KR&ceid=KR:ko");
+      fallback.searchParams.set("q", `노들 site:${source.domain}`);
+      return crawlSource({ ...source, name: `${source.name} (구글 보완)`, method: "google_news_rss", url: fallback.toString() }, startDate, endDate);
+    }
   }
 
+  logger.info({ source: source.name, method: source.method, accepted: results.length }, "Source collection complete");
   return results;
 }
 
@@ -243,15 +247,14 @@ async function crawlNaverQueryForMonth(
       }
 
       if (items.length < display) break;
+      if (pageStart === 901 && new Date(items[items.length - 1].pubDate) > start) {
+        warnSource("네이버 API", "검색어별 최신 1,000건 한도 도달: 과거 기간 전체 수집을 보장할 수 없습니다.");
+      }
       await new Promise((r) => setTimeout(r, 150));
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       const status = (err as { response?: { status?: number } })?.response?.status;
-      if (status === 401) {
-        logger.info({ query }, "Naver API 401 — skipping API path (web path covers this)");
-      } else {
-        logger.warn({ query, pageStart }, `Naver API error: ${msg}`);
-      }
+      warnSource("네이버 API", `HTTP ${status ?? "network"}, page ${pageStart}: ${msg}`);
       break;
     }
   }
@@ -267,25 +270,19 @@ export async function crawlNaverNews(
   const clientSecret = process.env.NAVER_CLIENT_SECRET;
 
   if (!clientId || !clientSecret) {
-    logger.warn("NAVER_CLIENT_ID/SECRET not set — skipping Naver News crawl");
+    warnSource("네이버 API", "NAVER_CLIENT_ID / NAVER_CLIENT_SECRET 미설정");
     return [];
   }
 
-  // Split into monthly chunks so each chunk stays well under the 1,000-item API cap.
-  // A single "노들섬" query for 5 months can exceed 1,000 results, causing the API
-  // to silently drop the oldest articles. Monthly splitting prevents this.
-  const months = splitIntoMonths(startDate, endDate);
-  logger.info({ months: months.length, startDate, endDate }, "Naver crawl: monthly split");
+  validateDateRange(startDate, endDate);
+  // The API has no date parameter. Fetch each query once, then filter locally.
 
   const allResults: ArticleData[] = [];
 
-  for (const month of months) {
     for (const query of NAVER_QUERIES) {
-      const items = await crawlNaverQueryForMonth(query, month.start, month.end, clientId, clientSecret);
+      const items = await crawlNaverQueryForMonth(query, startDate, endDate, clientId, clientSecret);
       allResults.push(...items);
-      logger.debug({ query, month: month.start, found: items.length }, "Naver month+query done");
     }
-  }
 
   logger.info({ total: allResults.length }, "Naver News crawl complete");
   return allResults;
@@ -295,18 +292,9 @@ export async function crawlAllSources(
   startDate: string,
   endDate: string,
 ): Promise<ArticleData[]> {
-  const settled = await Promise.allSettled(
-    NEWS_SOURCES.map((source) => crawlSource(source, startDate, endDate)),
-  );
-
-  const all: ArticleData[] = [];
-  for (const result of settled) {
-    if (result.status === "fulfilled") {
-      all.push(...result.value);
-    }
-  }
-
-  return all;
+  validateDateRange(startDate, endDate);
+  const results = await mapConcurrent(NEWS_SOURCES, 4, source => crawlSource(source, startDate, endDate));
+  return results.flat();
 }
 
 // Google News-only crawl used for repairing historical imports without
@@ -315,16 +303,8 @@ export async function crawlGoogleNews(
   startDate: string,
   endDate: string,
 ): Promise<ArticleData[]> {
-  const settled = await Promise.allSettled(
-    GOOGLE_NEWS_SOURCES.map((source) => crawlSource(source, startDate, endDate)),
-  );
-
-  const all: ArticleData[] = [];
-  for (const result of settled) {
-    if (result.status === "fulfilled") {
-      all.push(...result.value);
-    }
-  }
+  validateDateRange(startDate, endDate);
+  const all = (await mapConcurrent(GOOGLE_NEWS_SOURCES, 4, source => crawlSource(source, startDate, endDate))).flat();
 
   logger.info({ startDate, endDate, total: all.length }, "Google News-only crawl complete");
   return all;
@@ -365,7 +345,12 @@ async function crawlDaumWebForMonth(
 
       const $ = cheerio.load(resp.data as string);
       const items = $(".item-title");
-      if (items.length === 0) break;
+      if (items.length === 0) {
+        if (page === 1 && !/검색결과가 없습니다|검색 결과가 없습니다|검색된 결과가 없습니다/.test($.text())) {
+          warnSource("다음", "기사 요소를 찾지 못했습니다. 차단 또는 페이지 구조 변경을 확인하세요.");
+        }
+        break;
+      }
 
       let outOfRangeCount = 0;
       let newOnPage = 0; // count items we haven't seen before
@@ -384,8 +369,9 @@ async function crawlDaumWebForMonth(
 
         // Extract date from v.daum.net URL: /v/YYYYMMDDXXXXXXXXX
         const dateM = url.match(/\/v\/(\d{4})(\d{2})(\d{2})\d+/);
-        if (!dateM) return;
-        const pubDate = new Date(`${dateM[1]}-${dateM[2]}-${dateM[3]}T12:00:00+09:00`);
+        const dateStr = dateM ? `${dateM[1]}-${dateM[2]}-${dateM[3]}` : parseNaverDateText($(el).closest("li").find(".item-contents .gem-subinfo, .item-contents .txt_info, .gem-subinfo").text());
+        if (!dateStr) { warnSource("다음", "발행일을 추출할 수 없는 기사 제외"); return; }
+        const pubDate = new Date(`${dateStr}T12:00:00+09:00`);
         if (isNaN(pubDate.getTime())) return;
 
         if (pubDate > end) return;
@@ -415,14 +401,17 @@ async function crawlDaumWebForMonth(
       });
 
       // Stop if this page returned no new URLs (pagination stalled — same results repeating)
-      if (newOnPage === 0) break;
+      if (newOnPage === 0) {
+        warnSource("다음", "동일 페이지 반복으로 페이지 탐색 중단 (일부 기사 누락 가능)");
+        break;
+      }
       // Stop if most items are before the start date
-      if (outOfRangeCount >= items.length * 0.7) break;
+      if (outOfRangeCount > 0) break;
 
       await new Promise((r) => setTimeout(r, 300));
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      logger.warn({ query, page }, `Daum web search error: ${msg}`);
+      warnSource("다음", `page ${page}: ${msg}`);
       break;
     }
   }
@@ -466,18 +455,19 @@ const NAVER_WEB_HEADERS = {
 // Parse Naver date text (relative or absolute) → YYYY-MM-DD
 // Naver uses: "N분 전" / "N시간 전" (today), "N일 전" (1-6 days ago), "어제" (yesterday),
 // or absolute "YYYY.MM.DD" for older articles.
-function parseNaverDateText(text: string): string {
+export function parseNaverDateText(text: string, now = new Date()): string {
   // Absolute: "2026.05.25" or "2026.05.25."
   const absM = text.match(/(\d{4})\.(\d{2})\.(\d{2})/);
   if (absM) return `${absM[1]}-${absM[2]}-${absM[3]}`;
   // Relative times
-  const now = new Date();
   const hoursM = text.match(/(\d+)시간 전/);
-  if (hoursM) return new Date(now.getTime() - parseInt(hoursM[1]) * 3600_000).toISOString().slice(0, 10);
+  if (hoursM) return kstDate(new Date(now.getTime() - parseInt(hoursM[1]) * 3600_000));
   const daysM = text.match(/(\d+)일 전/);
-  if (daysM) return new Date(now.getTime() - parseInt(daysM[1]) * 86_400_000).toISOString().slice(0, 10);
-  if (/\d+분 전|방금/.test(text) || text.includes("오늘")) return now.toISOString().slice(0, 10);
-  if (text.includes("어제")) return new Date(now.getTime() - 86_400_000).toISOString().slice(0, 10);
+  if (daysM) return kstDate(new Date(now.getTime() - parseInt(daysM[1]) * 86_400_000));
+  const minutesM = text.match(/(\d+)분 전/);
+  if (minutesM) return kstDate(new Date(now.getTime() - parseInt(minutesM[1]) * 60_000));
+  if (/방금|오늘/.test(text)) return kstDate(now);
+  if (text.includes("어제")) return kstDate(new Date(now.getTime() - 86_400_000));
   return "";
 }
 
@@ -537,6 +527,7 @@ export async function crawlNaverWebSearch(
 
   for (const query of NAVER_WEB_QUERIES) {
     let emptyPages = 0;
+    const seenUrls = new Set<string>();
 
     for (let start = 1; start <= 1000; start += 10) {
       try {
@@ -549,13 +540,17 @@ export async function crawlNaverWebSearch(
         const articles = extractNaverWebArticles(resp.data as string);
 
         if (articles.length === 0) {
+          if (start === 1 && !/검색결과가 없습니다|검색 결과가 없습니다/.test(String(resp.data))) warnSource("네이버 웹", "기사 요소를 찾지 못했습니다. 차단 또는 구조 변경을 확인하세요.");
           emptyPages++;
           if (emptyPages >= 2) break;
           continue;
         }
         emptyPages = 0;
+        const fresh = articles.filter(article => !seenUrls.has(article.url));
+        if (fresh.length === 0) { warnSource("네이버 웹", "동일 페이지 반복으로 탐색 중단"); break; }
 
-        for (const article of articles) {
+        for (const article of fresh) {
+          seenUrls.add(article.url);
           if (!isRelevant(article.title, article.summary)) continue;
           const pubDate = new Date(`${article.dateStr}T12:00:00+09:00`);
           if (isNaN(pubDate.getTime())) continue;
@@ -578,7 +573,7 @@ export async function crawlNaverWebSearch(
         await new Promise((r) => setTimeout(r, 800));
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        logger.warn({ query, start }, `Naver web search error: ${msg}`);
+        warnSource("네이버 웹", `start ${start}: ${msg}`);
         break;
       }
     }

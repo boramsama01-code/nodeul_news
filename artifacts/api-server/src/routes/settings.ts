@@ -2,14 +2,26 @@ import { Router, type IRouter } from "express";
 import { getKakaoApiKey, setKakaoApiKey, deleteKakaoApiKey, isKakaoApiKeySet } from "../lib/configStore";
 import { logger } from "../lib/logger";
 import axios from "axios";
+import { setNaverKeys } from "../lib/configStore";
 
 const router: IRouter = Router();
+router.post("/settings/naver-key", (req, res): void => {
+  const { clientId, clientSecret } = req.body ?? {};
+  if (typeof clientId !== "string" || typeof clientSecret !== "string" || !clientId.trim() || !clientSecret.trim() || clientId.length > 512 || clientSecret.length > 512) {
+    res.status(400).json({ error: "Client ID와 Client Secret을 모두 입력해 주세요." }); return;
+  }
+  setNaverKeys(clientId.trim(), clientSecret.trim());
+  res.json({ ok: true });
+});
 
 // GET /api/settings — returns current config status (never exposes keys)
 router.get("/settings", (_req, res): void => {
   const kakaoSet = isKakaoApiKeySet();
   const kakaoKey = getKakaoApiKey();
   res.json({
+    naverApi: { configured: !!(process.env.NAVER_CLIENT_ID && process.env.NAVER_CLIENT_SECRET) },
+    ai: { configured: !!process.env.ANTHROPIC_API_KEY },
+    crawlIntervalMinutes: Number(process.env.CRAWL_INTERVAL_MINUTES || 30),
     kakaoApiKey: {
       configured: kakaoSet,
       masked: kakaoSet && kakaoKey ? `${kakaoKey.slice(0, 4)}${"*".repeat(Math.max(0, kakaoKey.length - 4))}` : null,
@@ -29,7 +41,7 @@ router.post("/settings/kakao-key", async (req, res): Promise<void> => {
 
   // Quick validation — call Kakao API with the key
   try {
-    await axios.get("https://dapi.kakao.com/v2/search/news", {
+    await axios.get("https://dapi.kakao.com/v2/search/web", {
       headers: { Authorization: `KakaoAK ${trimmedKey}` },
       params: { query: "노들", size: 1 },
       timeout: 8000,

@@ -1,0 +1,11 @@
+.git
+**/node_modules
+**/dist
+**/.local
+.env
+.env.*
+*.sql
+!deploy/init.sql
+attached_assets
+artifacts/mockup-sandbox
+**/*.tsbuildinfo

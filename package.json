@@ -3,7 +3,11 @@
   "version": "0.0.0",
   "license": "MIT",
   "scripts": {
-    "preinstall": "sh -c 'rm -f package-lock.json yarn.lock; case \"$npm_config_user_agent\" in pnpm/*) ;; *) echo \"Use pnpm instead\" >&2; exit 1 ;; esac'",
+    "preinstall": "node -e \"if(!process.env.npm_config_user_agent?.startsWith('pnpm/')){console.error('Use pnpm');process.exit(1)}\"",
+    "build:standalone": "pnpm --filter @workspace/web build && pnpm --filter @workspace/api-server build",
+    "start": "pnpm --filter @workspace/api-server start",
+    "worker": "pnpm --filter @workspace/api-server worker",
+    "test": "pnpm --filter @workspace/api-server test",
     "build": "pnpm run typecheck && pnpm -r --if-present run build",
     "typecheck:libs": "tsc --build",
     "typecheck": "pnpm run typecheck:libs && pnpm -r --filter \"./artifacts/**\" --filter \"./scripts\" --if-present run typecheck"

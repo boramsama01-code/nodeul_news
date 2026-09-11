@@ -1,12 +1,23 @@
-import { readFileSync, writeFileSync, existsSync } from "fs";
+import { readFileSync, writeFileSync, existsSync, mkdirSync } from "fs";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const CONFIG_PATH = join(__dirname, "../../../../.local/runtime-config.json");
+const CONFIG_PATH = join(process.env.DATA_DIR || ".local", "runtime-config.json");
 
 interface RuntimeConfig {
   kakaoRestApiKey?: string;
+  naverClientId?: string;
+  naverClientSecret?: string;
+}
+
+export function setNaverKeys(clientId: string, clientSecret: string): void {
+  const config = readConfig();
+  config.naverClientId = clientId;
+  config.naverClientSecret = clientSecret;
+  writeConfig(config);
+  process.env.NAVER_CLIENT_ID = clientId;
+  process.env.NAVER_CLIENT_SECRET = clientSecret;
 }
 
 function readConfig(): RuntimeConfig {
@@ -20,6 +31,7 @@ function readConfig(): RuntimeConfig {
 }
 
 function writeConfig(config: RuntimeConfig): void {
+  mkdirSync(dirname(CONFIG_PATH), { recursive: true });
   writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2), "utf-8");
 }
 
@@ -47,6 +59,10 @@ export function isKakaoApiKeySet(): boolean {
 
 export function loadRuntimeConfig(): void {
   const config = readConfig();
+  if (config.naverClientId && config.naverClientSecret) {
+    process.env.NAVER_CLIENT_ID = config.naverClientId;
+    process.env.NAVER_CLIENT_SECRET = config.naverClientSecret;
+  }
   if (config.kakaoRestApiKey && !process.env.KAKAO_REST_API_KEY) {
     process.env.KAKAO_REST_API_KEY = config.kakaoRestApiKey;
   }

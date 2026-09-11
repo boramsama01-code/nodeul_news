@@ -11,7 +11,7 @@ function getClient(): Anthropic | null {
     return null;
   }
   if (!_client) {
-    _client = new Anthropic({ apiKey: process.env["ANTHROPIC_API_KEY"] });
+    _client = new Anthropic({ apiKey: process.env["ANTHROPIC_API_KEY"], timeout: 15000, maxRetries: 1 });
   }
   return _client;
 }
@@ -60,7 +60,7 @@ export async function analyzeArticleSentiment(
       logger.warn({ err }, "AI analysis failed, falling back to rule-based");
     }
   } else {
-    logger.warn("ANTHROPIC_API_KEY not set — using rule-based sentiment");
+    logger.debug("ANTHROPIC_API_KEY not set — using rule-based sentiment");
   }
   return ruleBasedSentiment(title, content);
 }

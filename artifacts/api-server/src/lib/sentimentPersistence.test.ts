@@ -188,11 +188,11 @@ test("AI 분석 실패에도 대량 크롤링 저장이 중단되지 않는다",
 
     assert.deepEqual(
       inserted
-        .filter(({ source }) => source === "media_direct")
+        .filter(({ source }) => source === "naver_web")
         .map(({ title, isNegative, source }) => ({ title, isNegative, source })),
       [
-        { title: negative.title, isNegative: true, source: "media_direct" },
-        { title: ordinary.title, isNegative: false, source: "media_direct" },
+        { title: negative.title, isNegative: true, source: "naver_web" },
+        { title: ordinary.title, isNegative: false, source: "naver_web" },
       ],
     );
   });

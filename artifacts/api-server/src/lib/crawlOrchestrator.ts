@@ -1,6 +1,8 @@
 import { db } from "@workspace/db";
 import { articlesTable, crawlJobsTable } from "@workspace/db";
 import { eq } from "drizzle-orm";
+import { crawlWarnings, validateDateRange, warnSource } from "./crawlRuntime";
+import { withCrawlLock } from "./crawlLock";
 import { logger } from "./logger";
 import {
   isRelevant,
@@ -52,6 +54,17 @@ export async function runCrawlJob(
   endDate: string,
   dependencies: CrawlJobDependencies = {},
 ): Promise<void> {
+  validateDateRange(startDate, endDate);
+  const run = () => crawlWarnings.run([], () => executeCrawlJob(jobId, startDate, endDate, dependencies));
+  return dependencies.db ? run() : withCrawlLock(run, jobId);
+}
+
+async function executeCrawlJob(
+  jobId: string,
+  startDate: string,
+  endDate: string,
+  dependencies: CrawlJobDependencies = {},
+): Promise<void> {
   const database = dependencies.db ?? db;
   const analyze = dependencies.analyzeArticleSentiment ?? analyzeArticleSentiment;
   const crawlSources = {
@@ -63,10 +76,12 @@ export async function runCrawlJob(
   const existingSet = await loadExistingSet(database);
   let totalCollected = 0;
   let totalDuplicates = 0;
+  let insertFailures = 0;
+  let filtered = 0;
 
   await database
     .update(crawlJobsTable)
-    .set({ currentSource: "네이버API + 다음API + RSS 병렬 수집 중…", progress: 5 })
+    .set({ currentSource: "네이버 API·웹 + 다음 웹 + RSS 수집 중…", progress: 5 })
     .where(eq(crawlJobsTable.id, jobId));
 
   logger.info({ jobId }, "Starting parallel crawl: Naver API + Daum API + RSS sources");
@@ -89,6 +104,10 @@ export async function runCrawlJob(
   if (rssRes.status      === "rejected") logger.error({ err: rssRes.reason,      jobId }, "RSS crawl failed");
 
   const articles: ArticleData[] = [...naverApiResults, ...naverWebResults, ...daumResults, ...rssResults];
+  for (const [name, result] of [["네이버 API", naverApiRes], ["네이버 웹", naverWebRes], ["다음", daumRes], ["RSS", rssRes]] as const) {
+    if (result.status === "rejected") warnSource(name, "수집 요청 실패 (서버 로그 확인)");
+  }
+  const sourceCounts = `네이버API ${naverApiResults.length}, 네이버웹 ${naverWebResults.length}, 다음 ${daumResults.length}, RSS ${rssResults.length}`;
 
   await database
     .update(crawlJobsTable)
@@ -104,14 +123,11 @@ export async function runCrawlJob(
   );
 
   for (const article of articles) {
-    if (!isRelevant(article.title, article.content)) continue;
-    if (!isValidUrl(article.url)) continue;
+    if (!isRelevant(article.title, article.content) || !isValidUrl(article.url) || !Number.isFinite(article.publishedAt.getTime())) { filtered++; continue; }
     if (isDuplicate(article.url, article.title, article.publishedAt, existingSet, article.source, article.mediaName)) {
       totalDuplicates++;
       continue;
     }
-
-    addToSet(article.url, article.title, article.publishedAt, existingSet, article.source, article.mediaName);
 
     const isNegative = await analyze(
       article.title,
@@ -130,6 +146,7 @@ export async function runCrawlJob(
         source: article.source,
       });
       totalCollected++;
+      addToSet(article.url, article.title, article.publishedAt, existingSet, article.source, article.mediaName);
     } catch (err: unknown) {
       // Postgres duplicate-key code (23505) may be on the error itself or nested
       // under .cause (Drizzle wraps the original pg error in _DrizzleQueryError).
@@ -143,6 +160,7 @@ export async function runCrawlJob(
       if (isDupe) {
         totalDuplicates++;
       } else {
+        insertFailures++;
         logger.error({ err }, "Failed to insert article");
       }
     }
@@ -162,12 +180,13 @@ export async function runCrawlJob(
   await database
     .update(crawlJobsTable)
     .set({
-      status: "done",
+      status: insertFailures > 0 || (articles.length === 0 && (crawlWarnings.getStore()?.length ?? 0) > 0) ? "error" : "done",
       progress: 100,
       currentSource: "",
-      total: totalCollected + totalDuplicates,
+      total: articles.length,
       collected: totalCollected,
       duplicates: totalDuplicates,
+      error: [sourceCounts, `필터 제외 ${filtered}, 저장 실패 ${insertFailures}`, ...(crawlWarnings.getStore() ?? [])].join("\n"),
     })
     .where(eq(crawlJobsTable.id, jobId));
 

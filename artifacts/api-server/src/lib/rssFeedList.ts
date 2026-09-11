@@ -12,10 +12,10 @@ export const NEWS_SOURCES: NewsSource[] = [
   {"name":"구글뉴스-노들(최신)","method":"google_news_rss","url":"https://news.google.com/rss/search?q=%EB%85%B8%EB%93%A4&hl=ko&gl=KR&ceid=KR:ko","domain":"news.google.com"},
   // ── 주요 언론사 전체 RSS (키워드 필터링) ──
   {"name":"경향신문","method":"rss_direct","url":"https://www.khan.co.kr/rss/rssdata/total_news.xml","domain":"khan.co.kr"},
-  {"name":"국민일보","method":"rss_direct","url":"https://www.kmib.co.kr/rss/kmibRss.xml?typeFlag=0","domain":"kmib.co.kr"},
+  ...["Pol", "Eco", "Soc", "Int", "Ent", "Spo", "Golf", "Life", "Tra"].map(section => ({name: "국민일보", method: "rss_direct" as const, url: `https://www.kmib.co.kr/rss/data/kmib${section}Rss.xml`, domain: "kmib.co.kr"})),
   {"name":"동아일보","method":"rss_direct","url":"https://rss.donga.com/total.xml","domain":"donga.com"},
   {"name":"문화일보","method":"rss_direct","url":"https://www.munhwa.com/rss/rss.php","domain":"munhwa.com"},
-  {"name":"서울신문","method":"rss_direct","url":"https://www.seoul.co.kr/xml/rss/rss_main.php","domain":"seoul.co.kr"},
+  {"name":"서울신문","method":"rss_direct","url":"https://www.seoul.co.kr/xml/rss/google_flash_seoul.xml","domain":"seoul.co.kr"},
   {"name":"세계일보","method":"rss_direct","url":"https://www.segye.com/Articles/RssFeeds/rss.xml","domain":"segye.com"},
   {"name":"조선일보","method":"rss_direct","url":"https://www.chosun.com/arc/outboundfeeds/rss/?outputType=xml","domain":"chosun.com"},
   {"name":"중앙일보","method":"rss_direct","url":"https://rss.joins.com/joins_news_list.xml","domain":"joongang.co.kr"},
