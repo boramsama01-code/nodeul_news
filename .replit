@@ -3,7 +3,7 @@ modules = ["nodejs-24", "python-3.11", "postgresql-16"]
 [deployment]
 router = "application"
 deploymentTarget = "autoscale"
-run = ["node", "--enable-source-maps", "artifacts/api-server/dist/index.mjs"]
+run = ["node", "--enable-source-maps", "scripts/start-replit.mjs"]
 build = ["bash", "-c", "pnpm --filter @workspace/api-server run build && pnpm --filter @workspace/web run build"]
 
 [deployment.postBuild]
@@ -40,7 +40,7 @@ expertMode = true
 
 [postMerge]
 path = "scripts/post-merge.sh"
-timeoutMs = 20000
+timeoutMs = 120000
 
 [[ports]]
 localPort = 5000
@@ -64,8 +64,6 @@ externalPort = 3000
 [userenv]
 
 [userenv.shared]
-NAVER_CLIENT_ID = "Bdnb5ZUwP3Ye3jb0az5Q"
-NAVER_CLIENT_SECRET = "bzIA0_exdV"
 
 [nix]
 channel = "stable-25_05"

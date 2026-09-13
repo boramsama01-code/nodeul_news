@@ -10,7 +10,7 @@ name = "API Server"
 paths = ["/api"]
 
 [services.development]
-run = "pnpm --filter @workspace/api-server run dev"
+run = "RUN_SCHEDULER=true pnpm --filter @workspace/api-server run dev"
 
 [services.production]
 
@@ -27,6 +27,7 @@ args = ["node", "--enable-source-maps", "artifacts/api-server/dist/index.mjs"]
 [services.production.run.env]
 PORT = "8080"
 NODE_ENV = "production"
+RUN_SCHEDULER = "true"
 
 [services.production.health.startup]
 path = "/api/healthz"
