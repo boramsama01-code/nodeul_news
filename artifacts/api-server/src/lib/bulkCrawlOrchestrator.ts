@@ -1,3 +1,5 @@
+import { createRelevanceReview } from "./relevanceReview";
+import { loadExistingArticles } from "./existingArticles";
 import { db } from "@workspace/db";
 import { articlesTable, crawlJobsTable } from "@workspace/db";
 import { eq } from "drizzle-orm";
@@ -5,15 +7,13 @@ import { withCrawlLock } from "./crawlLock";
 import { crawlWarnings, validateDateRange, warnSource } from "./crawlRuntime";
 import { logger } from "./logger";
 import {
-  isRelevant,
-  isDuplicate,
-  addToSet,
   isValidUrl,
   extractPressName,
   ArticleData,
 } from "./crawlerUtils";
 import { analyzeArticleSentiment } from "./aiAnalysis";
 import { crawlAllSources, crawlNaverNews, crawlDaumNews, crawlNaverWebSearch } from "./crawlerSources";
+import { enrichArticles } from "./publisherResolver";
 
 export interface BulkCrawlJobDependencies {
   db?: typeof db;
@@ -22,6 +22,8 @@ export interface BulkCrawlJobDependencies {
   crawlNaverNews?: typeof crawlNaverNews;
   crawlDaumNews?: typeof crawlDaumNews;
   crawlNaverWebSearch?: typeof crawlNaverWebSearch;
+  enrichArticles?: typeof enrichArticles;
+  createRelevanceReview?: typeof createRelevanceReview;
 }
 
 // Return "YYYY-MM-DD" strings for each month boundary (no timezone conversion here;
@@ -56,31 +58,6 @@ function getMonthRanges(
   return ranges;
 }
 
-async function loadExistingSet(database: typeof db): Promise<Set<string>> {
-  const existingSet = new Set<string>();
-  const existing = await database
-    .select({
-      url: articlesTable.url,
-      title: articlesTable.title,
-      publishedAt: articlesTable.publishedAt,
-      source: articlesTable.source,
-      mediaName: articlesTable.mediaName,
-    })
-    .from(articlesTable);
-
-  for (const a of existing) {
-    const src = a.source ?? "";
-    const sourceKey = src === "google_news_rss" && a.mediaName?.trim()
-      ? `${src}__${a.mediaName.trim().replace(/\s+/g, "")}`
-      : src;
-    existingSet.add(`${sourceKey}__` + a.url.toLowerCase().trim().replace(/\/$/, ""));
-    const dateStr = a.publishedAt.toISOString().split("T")[0];
-    existingSet.add(`${sourceKey}__${a.title.trim().replace(/\s+/g, "")}__${dateStr}`);
-  }
-
-  return existingSet;
-}
-
 export async function runBulkCrawlJob(
   jobId: string,
   startDate: string,
@@ -111,7 +88,8 @@ async function executeBulkCrawlJob(
     daum: dependencies.crawlDaumNews ?? crawlDaumNews,
     naverWeb: dependencies.crawlNaverWebSearch ?? crawlNaverWebSearch,
   };
-  const existingSet = await loadExistingSet(database);
+  const existingArticles = await loadExistingArticles(database);
+  const review = await (dependencies.createRelevanceReview || createRelevanceReview)(dependencies.db ? {directory: false, maxRequests: 0} : {});
   // media_direct 중복 관리: "제목__언론사명" 완전일치 기준 (전체 크롤 범위 유지)
   const mediaDirectSet = new Set<string>();
   const sentimentCache = new Map<string, Promise<boolean>>();
@@ -119,6 +97,7 @@ async function executeBulkCrawlJob(
   let totalDuplicates = 0;
   let insertFailures = 0;
   let candidates = 0;
+  const monthSummaries: string[] = [];
 
   const getSentiment = (article: ArticleData): Promise<boolean> => {
     const key = `${article.title}\u0000${article.content}`;
@@ -163,22 +142,29 @@ async function executeBulkCrawlJob(
     if (daumRes.status     === "rejected") logger.error({ err: daumRes.reason,     jobId, month: month.label }, "Daum crawl failed for month");
     if (rssRes.status      === "rejected") logger.error({ err: rssRes.reason,      jobId, month: month.label }, "RSS crawl failed for month");
 
-    const articles: ArticleData[] = [...naverApiResults, ...naverWebResults, ...daumResults, ...rssResults];
+    const rawArticles: ArticleData[] = [...review.retryCandidates(month.start, month.end), ...naverApiResults, ...naverWebResults, ...daumResults, ...rssResults];
+    const enrich = dependencies.enrichArticles ?? (dependencies.db ? async (items: ArticleData[]) => items : enrichArticles);
+    const articles = await enrich(rawArticles, { maxRequests: 180 });
     candidates += articles.length;
+    monthSummaries.push(`${month.label}: 네이버웹 ${naverWebResults.length}, 다음 ${daumResults.length}, RSS·자체검색 ${rssResults.length}`);
     for (const [source, result] of [["네이버 웹", naverWebRes], ["다음", daumRes], ["RSS", rssRes]] as const) {
       if (result.status === "rejected") warnSource(source, `${month.label} 수집 실패`);
     }
 
     logger.info({ jobId, month: month.label, naverApi: naverApiResults.length, naverWeb: naverWebResults.length, daum: daumResults.length, rss: rssResults.length, count: articles.length }, "Bulk crawl: deduplicating month");
 
-    for (const article of articles) {
-      if (!isRelevant(article.title, article.content)) continue;
-      if (!isValidUrl(article.url)) continue;
-      if (isDuplicate(article.url, article.title, article.publishedAt, existingSet, article.source, article.mediaName)) {
+    for (const [articleIndex, candidate] of articles.entries()) {
+      let article = candidate;
+      if (!isValidUrl(article.url) || !Number.isFinite(article.publishedAt.getTime())) continue;
+      if (await existingArticles.duplicate(article, rawArticles[articleIndex]?.url)) {
         totalDuplicates++;
+        await review.delivered(article);
         continue;
       }
 
+      const assessed = await review.assess(article);
+      if (assessed.decision.status !== "related") continue;
+      article = assessed.article;
       const isNegative = await getSentiment(article);
 
       try {
@@ -193,7 +179,8 @@ async function executeBulkCrawlJob(
           source: article.source,
         });
         totalCollected++;
-        addToSet(article.url, article.title, article.publishedAt, existingSet, article.source, article.mediaName);
+        existingArticles.remember(article);
+        await review.delivered(article);
       } catch (err: unknown) {
         const error = err as { code?: string; cause?: { code?: string } };
         const code = error.code ?? error.cause?.code;
@@ -225,6 +212,7 @@ async function executeBulkCrawlJob(
     }
   }
 
+  await review.flush().catch(() => {});
   await database
     .update(crawlJobsTable)
     .set({
@@ -234,7 +222,7 @@ async function executeBulkCrawlJob(
       total: totalCollected + totalDuplicates,
       collected: totalCollected,
       duplicates: totalDuplicates,
-      error: [`후보 ${candidates}, 저장 실패 ${insertFailures}`, ...(crawlWarnings.getStore() ?? [])].join("\n"),
+      error: [`수집 기간 ${startDate} ~ ${endDate}`, `후보 ${candidates}, 저장 실패 ${insertFailures}`, review.summary(), ...monthSummaries, existingArticles.summary(), ...(crawlWarnings.getStore() ?? [])].join("\n"),
     })
     .where(eq(crawlJobsTable.id, jobId));
 

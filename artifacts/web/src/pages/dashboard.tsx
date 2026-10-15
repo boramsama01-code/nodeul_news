@@ -56,34 +56,34 @@ export default function Dashboard() {
   const [selectedYear, setSelectedYear] = useState<number>(currentYear);
 
   const { data: yearsData } = useGetStatYears({
-    query: { queryKey: getGetStatYearsQueryKey() },
+    query: { refetchInterval: 30_000, queryKey: getGetStatYearsQueryKey() },
   });
 
   const { data: summary, isLoading: loadingSummary } = useGetStatsSummary(
     { year: selectedYear },
-    { query: { queryKey: getGetStatsSummaryQueryKey({ year: selectedYear }) } },
+    { query: { refetchInterval: 30_000, queryKey: getGetStatsSummaryQueryKey({ year: selectedYear }) } },
   );
   const { data: prevSummary } = useGetStatsSummary(
     { year: selectedYear - 1 },
-    { query: { queryKey: getGetStatsSummaryQueryKey({ year: selectedYear - 1 }) } },
+    { query: { refetchInterval: 30_000, queryKey: getGetStatsSummaryQueryKey({ year: selectedYear - 1 }) } },
   );
 
   const { data: monthlyStats, isLoading: loadingMonthly } = useGetMonthlyStats(
     { year: selectedYear },
-    { query: { queryKey: getGetMonthlyStatsQueryKey({ year: selectedYear }) } },
+    { query: { refetchInterval: 30_000, queryKey: getGetMonthlyStatsQueryKey({ year: selectedYear }) } },
   );
   const { data: prevYearMonthly } = useGetMonthlyStats(
     { year: selectedYear - 1 },
-    { query: { queryKey: getGetMonthlyStatsQueryKey({ year: selectedYear - 1 }) } },
+    { query: { refetchInterval: 30_000, queryKey: getGetMonthlyStatsQueryKey({ year: selectedYear - 1 }) } },
   );
 
   const { data: topMedia, isLoading: loadingTopMedia } = useGetTopMedia(
     { year: selectedYear, limit: 10 },
-    { query: { queryKey: getGetTopMediaQueryKey({ year: selectedYear, limit: 10 }) } },
+    { query: { refetchInterval: 30_000, queryKey: getGetTopMediaQueryKey({ year: selectedYear, limit: 10 }) } },
   );
 
   const { data: recentArticles, isLoading: loadingRecent } = useGetRecentArticles({
-    query: { queryKey: getGetRecentArticlesQueryKey() },
+    query: { refetchInterval: 30_000, queryKey: getGetRecentArticlesQueryKey() },
   });
 
   // Build chart data: bar = 올해, dashed line = 전년, hidden line = 전년대비증감

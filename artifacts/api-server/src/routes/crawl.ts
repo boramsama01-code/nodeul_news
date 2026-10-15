@@ -1,3 +1,4 @@
+import {readProviderHealth} from "../lib/providerHealth";
 import { Router, type IRouter } from "express";
 import { v4 as uuidv4 } from "uuid";
 import { db, crawlJobsTable } from "@workspace/db";
@@ -11,8 +12,32 @@ import {
 import { runCrawlJob } from "../lib/crawlOrchestrator";
 import { runBulkCrawlJob } from "../lib/bulkCrawlOrchestrator";
 import { logger } from "../lib/logger";
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
+import { readRelevanceReviews } from "../lib/relevanceReview";
 
 const router: IRouter = Router();
+router.get("/crawl/relevance", async (req, res) => {
+  try {
+    const records = await readRelevanceReviews();
+    const status = String(req.query.status || "pending");
+    const page = Math.max(1, Number(req.query.page) || 1);
+    const counts = {related: 0, unrelated: 0, pending: 0};
+    for (const record of records) counts[record.decision.status]++;
+    const selected = records.filter(r => r.decision.status === status).reverse();
+    res.json({counts, total: selected.length, page, data: selected.slice((page - 1) * 30, page * 30).map(r => ({
+      title: r.article.title, url: r.article.url, source: r.article.source, mediaName: r.article.mediaName,
+      publishedAt: r.article.publishedAt, decision: r.decision, checkedAt: r.checkedAt, retryAt: r.retryAt, delivered: r.delivered,
+    }))});
+  } catch (err) { logger.error({err}, "Relevance journal read failed"); res.status(503).json({error: "관련성 확인 기록을 읽지 못했습니다."}); }
+});
+router.get("/crawl/provider-health", async (_req,res)=>{res.json(await readProviderHealth());});
+router.get("/crawl/source-health", async (_req, res) => {
+  try {
+    const report = JSON.parse(await readFile(join(process.env.DATA_DIR || ".local", "source-audit.json"), "utf8"));
+    res.json(report);
+  } catch { res.json({ checkedAt: null, sources: [] }); }
+});
 router.get("/crawl/recent", async (_req, res) => {
   const jobs = await db.select().from(crawlJobsTable).orderBy(desc(crawlJobsTable.createdAt)).limit(10);
   res.json(jobs);
@@ -51,7 +76,7 @@ router.post("/crawl/start", async (req, res): Promise<void> => {
   }
 
   // Fire and forget — do NOT await
-  runCrawlJob(jobId, startDate, endDate).catch((err) => {
+  runCrawlJob(jobId, startDate, endDate, {alternative:req.body.alternative===true, reviewOnly:req.body.reviewOnly===true}).catch((err) => {
     logger.error({ err, jobId }, "Crawl job crashed");
     db.update(crawlJobsTable)
       .set({ status: "error", error: String(err) })

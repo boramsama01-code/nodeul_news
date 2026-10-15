@@ -54,6 +54,7 @@ router.get("/articles", async (req, res): Promise<void> => {
   if (keyword) {
     const keywordCondition = or(
       ilike(articlesTable.title, `%${keyword}%`),
+      ilike(articlesTable.content, `%${keyword}%`),
       ilike(articlesTable.mediaName, `%${keyword}%`),
     );
     if (keywordCondition) conditions.push(keywordCondition);
@@ -72,7 +73,7 @@ router.get("/articles", async (req, res): Promise<void> => {
       .select()
       .from(articlesTable)
       .where(where)
-      .orderBy(desc(articlesTable.publishedAt))
+      .orderBy(desc(articlesTable.publishedAt), desc(articlesTable.id))
       .limit(limit)
       .offset(offset),
     db
@@ -298,7 +299,7 @@ router.get("/articles/export", async (req, res): Promise<void> => {
     .select()
     .from(articlesTable)
     .where(where)
-    .orderBy(desc(articlesTable.publishedAt));
+    .orderBy(desc(articlesTable.publishedAt), desc(articlesTable.id));
 
   const workbook = new ExcelJS.Workbook();
   workbook.creator = "노들섬 뉴스 모니터";

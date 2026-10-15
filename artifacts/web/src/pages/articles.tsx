@@ -41,9 +41,13 @@ export default function Articles() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
 
-  const [year, setYear] = useState<number | undefined>(undefined);
-  const [month, setMonth] = useState<number | undefined>(undefined);
-  const [keyword, setKeyword] = useState("");
+  const initialFilters = new URLSearchParams(window.location.search);
+  const initialYear = Number(initialFilters.get("year"));
+  const initialMonth = Number(initialFilters.get("month"));
+  const currentYearKst = new Date(Date.now() + 9 * 3600_000).getUTCFullYear();
+  const [year, setYear] = useState<number | undefined>(initialYear >= 1900 && initialYear <= 2200 ? initialYear : currentYearKst);
+  const [month, setMonth] = useState<number | undefined>(initialMonth >= 1 && initialMonth <= 12 ? initialMonth : undefined);
+  const [keyword, setKeyword] = useState(initialFilters.get("keyword") || "");
   const [filterNegative, setFilterNegative] = useState<boolean | undefined>(undefined);
   const [filterSelfPR, setFilterSelfPR] = useState<boolean | undefined>(undefined);
   const [page, setPage] = useState(1);
@@ -82,7 +86,7 @@ export default function Articles() {
   };
 
   const { data: yearsData } = useGetStatYears({
-    query: { queryKey: getGetStatYearsQueryKey() },
+    query: { refetchInterval: 30_000, queryKey: getGetStatYearsQueryKey() },
   });
 
   const queryParams = {
@@ -96,7 +100,7 @@ export default function Articles() {
   };
 
   const { data, isLoading, refetch } = useListArticles(queryParams, {
-    query: { queryKey: getListArticlesQueryKey(queryParams) },
+    query: { refetchInterval: 30_000, queryKey: getListArticlesQueryKey(queryParams) },
   });
 
   const updateArticle = useUpdateArticle();
@@ -111,6 +115,8 @@ export default function Articles() {
   useEffect(() => {
     setSelectedIds(new Set());
   }, [page, year, month, keyword, filterNegative, filterSelfPR]);
+
+  useEffect(() => { setPage(1); }, [year, month, keyword, filterNegative, filterSelfPR]);
 
   const handleToggle = (id: number, field: "isNegative" | "isSelfPR", val: boolean) => {
     updateArticle.mutate(
@@ -265,7 +271,7 @@ export default function Articles() {
               <Label className="text-xs text-muted-foreground">키워드</Label>
               <Input
                 className="h-8 w-44"
-                placeholder="제목 또는 매체명..."
+                placeholder="제목·본문·언론사명..."
                 value={keyword}
                 onChange={(e) => setKeyword(e.target.value)}
                 onKeyDown={(e) => e.key === "Enter" && applyFilters()}

@@ -1,3 +1,6 @@
+import { createRelevanceReview } from "./relevanceReview";
+import {crawlOfficialArchives} from "./officialArchives";
+import { loadExistingArticles } from "./existingArticles";
 import { db } from "@workspace/db";
 import { articlesTable, crawlJobsTable } from "@workspace/db";
 import { eq } from "drizzle-orm";
@@ -5,47 +8,24 @@ import { crawlWarnings, validateDateRange, warnSource } from "./crawlRuntime";
 import { withCrawlLock } from "./crawlLock";
 import { logger } from "./logger";
 import {
-  isRelevant,
-  isDuplicate,
-  addToSet,
   isValidUrl,
   ArticleData,
 } from "./crawlerUtils";
 import { analyzeArticleSentiment } from "./aiAnalysis";
 import { crawlAllSources, crawlNaverNews, crawlDaumNews, crawlNaverWebSearch } from "./crawlerSources";
+import { enrichArticles } from "./publisherResolver";
 
 export interface CrawlJobDependencies {
+  reviewOnly?: boolean;
+  alternative?: boolean;
   db?: typeof db;
   analyzeArticleSentiment?: typeof analyzeArticleSentiment;
   crawlAllSources?: typeof crawlAllSources;
   crawlNaverNews?: typeof crawlNaverNews;
   crawlDaumNews?: typeof crawlDaumNews;
   crawlNaverWebSearch?: typeof crawlNaverWebSearch;
-}
-
-async function loadExistingSet(database: typeof db): Promise<Set<string>> {
-  const existingSet = new Set<string>();
-  const existing = await database
-    .select({
-      url: articlesTable.url,
-      title: articlesTable.title,
-      publishedAt: articlesTable.publishedAt,
-      source: articlesTable.source,
-      mediaName: articlesTable.mediaName,
-    })
-    .from(articlesTable);
-
-  for (const a of existing) {
-    const src = a.source ?? "";
-    const sourceKey = src === "google_news_rss" && a.mediaName?.trim()
-      ? `${src}__${a.mediaName.trim().replace(/\s+/g, "")}`
-      : src;
-    existingSet.add(`${sourceKey}__` + a.url.toLowerCase().trim().replace(/\/$/, ""));
-    const dateStr = a.publishedAt.toISOString().split("T")[0];
-    existingSet.add(`${sourceKey}__${a.title.trim().replace(/\s+/g, "")}__${dateStr}`);
-  }
-
-  return existingSet;
+  enrichArticles?: typeof enrichArticles;
+  createRelevanceReview?: typeof createRelevanceReview;
 }
 
 export async function runCrawlJob(
@@ -67,13 +47,14 @@ async function executeCrawlJob(
 ): Promise<void> {
   const database = dependencies.db ?? db;
   const analyze = dependencies.analyzeArticleSentiment ?? analyzeArticleSentiment;
-  const crawlSources = {
-    all: dependencies.crawlAllSources ?? crawlAllSources,
-    naver: dependencies.crawlNaverNews ?? crawlNaverNews,
+  const crawlSources = dependencies.reviewOnly ? {all: async () => [], naver: async () => [], daum: async () => [], naverWeb: async () => []} : {
+    all: dependencies.crawlAllSources ?? (dependencies.alternative ? crawlOfficialArchives : crawlAllSources),
+    naver: dependencies.crawlNaverNews ?? (dependencies.alternative ? async()=>[] : crawlNaverNews),
     daum: dependencies.crawlDaumNews ?? crawlDaumNews,
-    naverWeb: dependencies.crawlNaverWebSearch ?? crawlNaverWebSearch,
+    naverWeb: dependencies.crawlNaverWebSearch ?? (dependencies.alternative ? async()=>[] : crawlNaverWebSearch),
   };
-  const existingSet = await loadExistingSet(database);
+  const existingArticles = await loadExistingArticles(database);
+  const review = await (dependencies.createRelevanceReview || createRelevanceReview)(dependencies.db ? {directory: false, maxRequests: 0} : {});
   let totalCollected = 0;
   let totalDuplicates = 0;
   let insertFailures = 0;
@@ -81,7 +62,7 @@ async function executeCrawlJob(
 
   await database
     .update(crawlJobsTable)
-    .set({ currentSource: "네이버 API·웹 + 다음 웹 + RSS 수집 중…", progress: 5 })
+    .set({ currentSource: dependencies.alternative ? "언론사 자체검색 + 다음 검색으로 보완 중…" : "네이버 API·웹 + 다음 웹 + RSS 수집 중…", progress: 5 })
     .where(eq(crawlJobsTable.id, jobId));
 
   logger.info({ jobId }, "Starting parallel crawl: Naver API + Daum API + RSS sources");
@@ -103,11 +84,14 @@ async function executeCrawlJob(
   if (daumRes.status     === "rejected") logger.error({ err: daumRes.reason,     jobId }, "Daum crawl failed");
   if (rssRes.status      === "rejected") logger.error({ err: rssRes.reason,      jobId }, "RSS crawl failed");
 
-  const articles: ArticleData[] = [...naverApiResults, ...naverWebResults, ...daumResults, ...rssResults];
+  const candidates: ArticleData[] = [...review.retryCandidates(startDate, endDate), ...naverApiResults, ...naverWebResults, ...daumResults, ...rssResults];
+  await database.update(crawlJobsTable).set({ currentSource: "원문 링크와 언론사 확인 중…", progress: 50 }).where(eq(crawlJobsTable.id, jobId));
+  const enrich = dependencies.enrichArticles ?? (dependencies.db ? async (items: ArticleData[]) => items : enrichArticles);
+  const articles = await enrich(candidates, { maxRequests: 180 });
   for (const [name, result] of [["네이버 API", naverApiRes], ["네이버 웹", naverWebRes], ["다음", daumRes], ["RSS", rssRes]] as const) {
     if (result.status === "rejected") warnSource(name, "수집 요청 실패 (서버 로그 확인)");
   }
-  const sourceCounts = `네이버API ${naverApiResults.length}, 네이버웹 ${naverWebResults.length}, 다음 ${daumResults.length}, RSS ${rssResults.length}`;
+  const sourceCounts = dependencies.alternative ? `구글 제외 보완: 공식 검색 ${rssResults.length}, 다음 ${daumResults.length}` : `네이버API ${naverApiResults.length}, 네이버웹 ${naverWebResults.length}, 다음 ${daumResults.length}, RSS·자체검색 ${rssResults.length}`;
 
   await database
     .update(crawlJobsTable)
@@ -122,13 +106,18 @@ async function executeCrawlJob(
     "Crawl complete, deduplicating",
   );
 
-  for (const article of articles) {
-    if (!isRelevant(article.title, article.content) || !isValidUrl(article.url) || !Number.isFinite(article.publishedAt.getTime())) { filtered++; continue; }
-    if (isDuplicate(article.url, article.title, article.publishedAt, existingSet, article.source, article.mediaName)) {
+  for (const [articleIndex, candidate] of articles.entries()) {
+    let article = candidate;
+    if (!isValidUrl(article.url) || !Number.isFinite(article.publishedAt.getTime())) { filtered++; continue; }
+    if (await existingArticles.duplicate(article, candidates[articleIndex]?.url)) {
       totalDuplicates++;
+      await review.delivered(article);
       continue;
     }
 
+    const assessed = await review.assess(article);
+    if (assessed.decision.status !== "related") { filtered++; continue; }
+    article = assessed.article;
     const isNegative = await analyze(
       article.title,
       article.content,
@@ -146,7 +135,8 @@ async function executeCrawlJob(
         source: article.source,
       });
       totalCollected++;
-      addToSet(article.url, article.title, article.publishedAt, existingSet, article.source, article.mediaName);
+      existingArticles.remember(article);
+      await review.delivered(article);
     } catch (err: unknown) {
       // Postgres duplicate-key code (23505) may be on the error itself or nested
       // under .cause (Drizzle wraps the original pg error in _DrizzleQueryError).
@@ -177,16 +167,17 @@ async function executeCrawlJob(
     }
   }
 
+  await review.flush().catch(() => {});
   await database
     .update(crawlJobsTable)
     .set({
-      status: insertFailures > 0 || (articles.length === 0 && (crawlWarnings.getStore()?.length ?? 0) > 0) ? "error" : "done",
+      status: insertFailures > 0 || (dependencies.alternative && (crawlWarnings.getStore()?.length ?? 0)>0) || (articles.length === 0 && (crawlWarnings.getStore()?.length ?? 0) > 0) ? "error" : "done",
       progress: 100,
       currentSource: "",
       total: articles.length,
       collected: totalCollected,
       duplicates: totalDuplicates,
-      error: [sourceCounts, `필터 제외 ${filtered}, 저장 실패 ${insertFailures}`, ...(crawlWarnings.getStore() ?? [])].join("\n"),
+      error: [sourceCounts, `필터 제외 ${filtered}, 저장 실패 ${insertFailures}`, review.summary(), existingArticles.summary(), ...(crawlWarnings.getStore() ?? [])].join("\n"),
     })
     .where(eq(crawlJobsTable.id, jobId));
 
