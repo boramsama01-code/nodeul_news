@@ -124,14 +124,14 @@ async function executeBulkCrawlJob(
       : crawlDateChunks("네이버 웹", crawlSources.naverWeb, month.start, month.end, {
           days: 7, pauseMinMs: 2400, pauseMaxMs: 4400,
         }));
-    await sleepWithJitter(3000, 5200);
+    if (!dependencies.db) await sleepWithJitter(3000, 5200);
 
     const daumRes = await settle(() => dependencies.crawlDaumNews
       ? crawlSources.daum(month.start, month.end)
       : crawlDateChunks("다음 웹", crawlSources.daum, month.start, month.end, {
           days: 7, pauseMinMs: 2400, pauseMaxMs: 4400,
         }));
-    await sleepWithJitter(3000, 5200);
+    if (!dependencies.db) await sleepWithJitter(3000, 5200);
 
     const rssRes = await settle(() => crawlSources.all(month.start, month.end));
 
@@ -204,7 +204,7 @@ async function executeBulkCrawlJob(
       total: totalCollected + totalDuplicates + totalRefreshed,
     }).where(eq(crawlJobsTable.id, jobId));
 
-    if (i < months.length - 1) await sleepWithJitter(8000, 12000);
+    if (!dependencies.db && i < months.length - 1) await sleepWithJitter(8000, 12000);
   }
 
   await database.update(crawlJobsTable).set({
