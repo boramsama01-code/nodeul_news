@@ -79,7 +79,7 @@ async function executeCrawlJob(
 
   logger.info({ jobId, startDate, endDate }, "Starting paced crawl");
 
-  const useNaverApi = shouldUseNaverApi(endDate);
+  const useNaverApi = dependencies.crawlNaverNews ? true : shouldUseNaverApi(endDate);
   const naverApiRes = useNaverApi
     ? await settle(() => crawlSources.naver(startDate, endDate))
     : ({ status: "fulfilled", value: [] } as PromiseFulfilledResult<ArticleData[]>);
@@ -92,14 +92,14 @@ async function executeCrawlJob(
     : crawlDateChunks("네이버 웹", crawlSources.naverWeb, startDate, endDate, {
         days: 7, pauseMinMs: 2200, pauseMaxMs: 4200,
       }));
-  await sleepWithJitter(2200, 4200);
+  if (!dependencies.db) await sleepWithJitter(2200, 4200);
 
   const daumRes = await settle(() => dependencies.crawlDaumNews
     ? crawlSources.daum(startDate, endDate)
     : crawlDateChunks("다음 웹", crawlSources.daum, startDate, endDate, {
         days: 7, pauseMinMs: 2200, pauseMaxMs: 4200,
       }));
-  await sleepWithJitter(2200, 4200);
+  if (!dependencies.db) await sleepWithJitter(2200, 4200);
 
   const rssRes = await settle(() => crawlSources.all(startDate, endDate));
 
@@ -134,7 +134,7 @@ async function executeCrawlJob(
       filtered++;
       continue;
     }
-    const article = await enrichArticlePublisher(candidate);
+    const article = dependencies.db ? candidate : await enrichArticlePublisher(candidate);
     try {
       if (await refreshExcludedArticle(database, existing, article)) { totalRefreshed++; continue; }
     } catch (err) {
