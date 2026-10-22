@@ -1,6 +1,6 @@
 # 노들섬 뉴스 모니터 — 독립 실행 안내
 
-Render 무료 시험 배포는 [배포 안내](docs/RENDER_DEPLOYMENT.md)를 참고하세요. 아래 Windows 검증 기록은 당시 결과이며 현재 배포 상태와 구분합니다.
+Render 무료 시험 배포는 **수집 버튼을 누를 때만 실행하는 수동 방식**입니다. [배포 안내](docs/RENDER_DEPLOYMENT.md)를 참고하세요. 아래 Windows 자동 수집 방식과 검증 기록은 별도 구성의 당시 결과이며 현재 배포 상태와 구분합니다.
 
 ## Windows 실행
 

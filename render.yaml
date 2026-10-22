@@ -1,4 +1,4 @@
-# Free trial; DB expires 30 days after creation, web sleeps after 15 idle minutes.
+# Manual collection only; DB expires after 30 days, web sleeps after 15 idle minutes.
 # Existing nodeul-news-db is reused by name. No paid worker or cron is created.
 services:
   - type: web
@@ -30,9 +30,7 @@ services:
       - key: WEB_DIST
         value: artifacts/web/dist/public
       - key: RUN_SCHEDULER
-        value: "true"
-      - key: CRAWL_INTERVAL_MINUTES
-        value: "30"
+        value: "false"
       - key: IMPORT_ARCHIVE_ONCE
         value: "true"
       - key: DEPLOYMENT_MODE
