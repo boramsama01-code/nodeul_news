@@ -4,7 +4,7 @@ import * as cheerio from "cheerio";
 import { logger } from "./logger";
 import { isRelevant, stripHtml, isValidUrl, resolveMediaName, resolveMediaNameStrict, ArticleData } from "./crawlerUtils";
 import { NEWS_SOURCES, GOOGLE_NEWS_SOURCES, NewsSource } from "./rssFeedList";
-import { googleFeedUrl, kstDate, mapConcurrent, warnSource, validateDateRange } from "./crawlRuntime";
+import { googleFeedUrl, kstDate, mapConcurrent, parseRssPublishedAt, warnSource, validateDateRange } from "./crawlRuntime";
 import { COLLECTION_KEYWORDS, GOOGLE_NEWS_QUERY } from "./newsRelevance";
 
 const TIMEOUT_MS = 30000;
@@ -65,19 +65,12 @@ export async function crawlSource(
         // Search engines can return related terms: validate every channel's text.
         if (!isRelevant(title, content)) continue;
 
-        // Date filtering — only apply if pubDate exists
-        if (item.pubDate || item.isoDate) {
-          const pubDate = new Date(item.pubDate || item.isoDate || "");
-          if (!isNaN(pubDate.getTime())) {
-            if (pubDate < start || pubDate > end) continue;
-          }
-        }
-
-        const pubDate = new Date(item.pubDate || item.isoDate || "");
-        if (!Number.isFinite(pubDate.getTime())) {
+        const pubDate = parseRssPublishedAt(item);
+        if (!pubDate) {
           warnSource(source.name, "발행일이 없거나 잘못된 RSS 항목 제외");
           continue;
         }
+        if (pubDate < start || pubDate > end) continue;
 
         let finalTitle = title;
         let mediaName: string;

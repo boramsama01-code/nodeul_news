@@ -11,6 +11,7 @@ import {
   desc,
   isNull,
   isNotNull,
+  not,
 } from "drizzle-orm";
 import {
   ListArticlesQueryParams,
@@ -127,6 +128,25 @@ router.get("/articles/trash", async (req, res): Promise<void> => {
     page,
     totalPages: Math.ceil(total / limit),
   });
+});
+
+// POST /articles/trash-irrelevant — review or move only currently active nonmatches.
+router.post("/articles/trash-irrelevant", async (req, res): Promise<void> => {
+  const dryRun = req.body?.dryRun;
+  if (typeof dryRun !== "boolean") {
+    res.status(400).json({ error: "dryRun을 true 또는 false로 지정해 주세요." });
+    return;
+  }
+  const where = and(isNull(articlesTable.deletedAt), not(relevantArticleCondition()));
+  if (dryRun) {
+    const [row] = await db.select({ count: sql<number>`COUNT(*)` }).from(articlesTable).where(where);
+    res.json({ dryRun: true, count: Number(row?.count ?? 0) });
+    return;
+  }
+  // One atomic soft-delete rechecks the predicate; existing trash is untouched.
+  const moved = await db.update(articlesTable).set({ deletedAt: new Date() }).where(where)
+    .returning({ id: articlesTable.id });
+  res.json({ dryRun: false, count: moved.length });
 });
 
 // POST /articles

@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import axios from "axios";
 import Parser from "rss-parser";
-import { googleFeedUrl, kstDate, mapConcurrent, validateDateRange } from "./crawlRuntime";
+import { googleFeedUrl, kstDate, mapConcurrent, parseRssPublishedAt, validateDateRange } from "./crawlRuntime";
 import { crawlDaumNews, crawlNaverNews, crawlNaverWebSearch, crawlSource, parseNaverDateText } from "./crawlerSources";
 import { COLLECTION_KEYWORDS, GOOGLE_NEWS_QUERY } from "./newsRelevance";
 import { GOOGLE_NEWS_SOURCES } from "./rssFeedList";
@@ -20,6 +20,33 @@ test("invalid and reversed dates fail before starting network requests", () => {
   assert.throws(() => validateDateRange("2026-02-30", "2026-03-01"));
   assert.throws(() => validateDateRange("2026-09-11", "2026-09-10"));
   validateDateRange("2024-02-29", "2024-02-29");
+});
+
+test("Korean RSS dates use source timestamps in KST instead of parser-derived server time", () => {
+  assert.equal(parseRssPublishedAt({pubDate:"2026-10-22 13:54:00", isoDate:"2026-10-22T20:54:00Z"})?.toISOString(), "2026-10-22T04:54:00.000Z");
+  assert.equal(parseRssPublishedAt({"dc:date":"2026-01-01 00:10:00", isoDate:"2026-01-01T08:10:00Z"})?.toISOString(), "2025-12-31T15:10:00.000Z");
+  assert.equal(parseRssPublishedAt({date:"2024-02-29T23:59:59"})?.toISOString(), "2024-02-29T14:59:59.000Z");
+  assert.equal(parseRssPublishedAt({pubDate:"Thu, 22 Oct 2026 14:05:05 +0900"})?.toISOString(), "2026-10-22T05:05:05.000Z");
+  assert.equal(parseRssPublishedAt({isoDate:"2026-10-22T05:05:05Z"})?.toISOString(), "2026-10-22T05:05:05.000Z");
+  for (const pubDate of ["2026-02-30 13:00:00", "2026-02-30T13:00:00Z", "2026-10-22 24:01:00", "2026-10-22 13:61:00", "invalid"]) {
+    assert.equal(parseRssPublishedAt({pubDate, isoDate:"2026-10-22T01:00:00Z"}), null);
+  }
+  assert.equal(parseRssPublishedAt({}), null);
+});
+
+test("RSS date filtering respects the Korean midnight boundary and rejects invalid source dates", async () => {
+  const previousParse = Parser.prototype.parseURL;
+  Parser.prototype.parseURL = (async () => ({ items: [
+    {title:"노들섬 신년 행사", link:"https://example.com/new-year", "dc:date":"2026-01-01 00:10:00", isoDate:"2026-01-01T08:10:00Z"},
+    {title:"노들섬 전날 행사", link:"https://example.com/previous-day", pubDate:"2025-12-31 23:59:00"},
+    {title:"노들섬 잘못된 날짜", link:"https://example.com/invalid-day", pubDate:"2026-01-32 12:00:00", isoDate:"2026-01-01T03:00:00Z"},
+  ] })) as typeof Parser.prototype.parseURL;
+  try {
+    const articles = await crawlSource({name:"시험 언론사", method:"rss_direct", url:"https://example.com/rss", domain:"example.com"}, "2026-01-01", "2026-01-01");
+    assert.equal(articles.length, 1);
+    assert.equal(articles[0].url, "https://example.com/new-year");
+    assert.equal(articles[0].publishedAt.toISOString(), "2025-12-31T15:10:00.000Z");
+  } finally { Parser.prototype.parseURL = previousParse; }
 });
 
 test("Google query includes the requested historical interval and press filter", () => {
