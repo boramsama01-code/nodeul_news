@@ -8,7 +8,7 @@ interface Configuration {
   naverApi: { configured: boolean };
   ai: { configured: boolean };
   crawlIntervalMinutes: number;
-  deployment?: { cloud: boolean; trial: boolean; databaseExpiresAt: string | null; schedulerEnabled: boolean };
+  deployment?: { cloud: boolean; trial: boolean; databaseExpiresAt: string | null; schedulerEnabled: boolean; revision?: string | null };
 }
 export default function SettingsPage() {
   const client = useQueryClient();
@@ -38,6 +38,7 @@ export default function SettingsPage() {
   const manualCloud = data?.deployment?.cloud === true && !data.deployment.schedulerEnabled;
   return <div className="space-y-6 max-w-2xl mx-auto">
     <h2 className="text-2xl font-bold">운영 설정</h2>
+    {data?.deployment?.revision && <p className="text-sm text-muted-foreground">현재 운영 버전: {data.deployment.revision.slice(0, 7)}</p>}
     {isError && <p role="alert">서버 설정을 불러오지 못했습니다.</p>}
     {data?.deployment?.trial && <Card className="border-amber-300 bg-amber-50"><CardHeader><CardTitle>무료 시험 운영 중</CardTitle></CardHeader>
       <CardContent className="space-y-2 text-sm text-amber-950">

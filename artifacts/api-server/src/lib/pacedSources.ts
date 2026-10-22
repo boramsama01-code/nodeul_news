@@ -1,3 +1,4 @@
+import { crawlOfficialArchives } from "./officialArchives";
 import { NEWS_SOURCES, type NewsSource } from "./rssFeedList";
 import { crawlSource } from "./crawlerSources";
 import { crawlDateChunks, mapInPacedBatches, sleepWithJitter } from "./crawlPacing";
@@ -23,7 +24,7 @@ function isHistorical(endDate: string): boolean {
 function deduplicate(articles: ArticleData[]): ArticleData[] {
   const seen = new Set<string>();
   return articles.filter((article) => {
-    const key = JSON.stringify([article.source, article.url, article.mediaName]);
+    const key = JSON.stringify([article.source, article.url]);
     if (seen.has(key)) return false;
     seen.add(key);
     return true;
@@ -79,6 +80,7 @@ export async function crawlAllSourcesPaced(startDate: string, endDate: string): 
     await sleepWithJitter(2500, 4500);
   }
 
+  results.push(...await crawlOfficialArchives(startDate,endDate));
   const deduped = deduplicate(results);
   logger.info(
     { startDate, endDate, historical, candidates: results.length, deduped: deduped.length },

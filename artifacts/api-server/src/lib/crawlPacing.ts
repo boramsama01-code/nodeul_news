@@ -6,6 +6,17 @@ export interface DateRange {
   end: string;
 }
 
+// Keep earlier results when a later provider fails; never start every portal at once.
+export async function settleSequentially<T>(tasks: Array<() => Promise<T>>, gapMs = 2000): Promise<PromiseSettledResult<T>[]> {
+  const results: PromiseSettledResult<T>[] = [];
+  for (const [index, task] of tasks.entries()) {
+    try { results.push({status:"fulfilled", value:await task()}); }
+    catch (reason) { results.push({status:"rejected", reason}); }
+    if (gapMs > 0 && index < tasks.length - 1) await sleepWithJitter(gapMs,gapMs);
+  }
+  return results;
+}
+
 function parseIsoDate(value: string): Date {
   const parsed = new Date(`${value}T00:00:00Z`);
   if (!Number.isFinite(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== value) {

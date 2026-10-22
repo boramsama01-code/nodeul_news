@@ -42,7 +42,7 @@ test("RSS date filtering respects the Korean midnight boundary and rejects inval
     {title:"노들섬 잘못된 날짜", link:"https://example.com/invalid-day", pubDate:"2026-01-32 12:00:00", isoDate:"2026-01-01T03:00:00Z"},
   ] })) as typeof Parser.prototype.parseURL;
   try {
-    const articles = await crawlSource({name:"시험 언론사", method:"rss_direct", url:"https://example.com/rss", domain:"example.com"}, "2026-01-01", "2026-01-01");
+    const articles = await crawlSource({name:"시험 언론사", method:"rss_direct", url:"https://example.com/rss", domain:"example.com"}, "2026-01-01", "2026-01-01", {loadFeed: () => new Parser().parseURL("fixture")});
     assert.equal(articles.length, 1);
     assert.equal(articles[0].url, "https://example.com/new-year");
     assert.equal(articles[0].publishedAt.toISOString(), "2025-12-31T15:10:00.000Z");
@@ -58,7 +58,7 @@ test("Google query includes the requested historical interval and press filter",
   }
 });
 
-test("Google and direct RSS reject related road names and retain each approved term", async () => {
+test("Google and direct RSS retain ambiguous candidates for original-body review", async () => {
   const previousParse = Parser.prototype.parseURL;
   Parser.prototype.parseURL = (async () => ({ items: [
     ...COLLECTION_KEYWORDS.map((keyword, index) => ({title:`${keyword} 행사`, link:`https://example.com/${index}`, pubDate:"2026-01-10T03:00:00Z"})),
@@ -66,10 +66,10 @@ test("Google and direct RSS reject related road names and retain each approved t
   ] })) as typeof Parser.prototype.parseURL;
   try {
     for (const method of ["google_news_rss", "rss_direct"] as const) {
-      const articles = await crawlSource({name:"시험 언론사", method, url:"https://example.com/rss", domain:"example.com"}, "2026-01-01", "2026-01-31");
-      assert.equal(articles.length, COLLECTION_KEYWORDS.length);
+      const articles = await crawlSource({name:"시험 언론사", method, url:"https://example.com/rss", domain:"example.com"}, "2026-01-01", "2026-01-31", {loadFeed: () => new Parser().parseURL("fixture")});
+      assert.equal(articles.filter(article => !article.url.endsWith("/road")).length, COLLECTION_KEYWORDS.length);
       assert.ok(articles.every(article => article.source === method));
-      assert.ok(articles.every(article => !article.url.endsWith("/road")));
+      assert.ok(articles.some(article => article.url.endsWith("/road")), "ambiguous candidates are reviewed, not discarded before reading originals");
     }
   } finally { Parser.prototype.parseURL = previousParse; }
 });
@@ -104,7 +104,7 @@ test("multi-month Naver request fetches each keyword once without pretending dat
   try {
     const articles = await crawlNaverNews("2026-01-01", "2026-09-11");
     assert.deepEqual(queries, [...COLLECTION_KEYWORDS]);
-    assert.equal(articles.length, COLLECTION_KEYWORDS.length);
+    assert.equal(articles.filter(article => !article.url.endsWith("/road")).length, COLLECTION_KEYWORDS.length);
   } finally {
     axios.get = previousGet;
     if (previousId === undefined) delete process.env.NAVER_CLIENT_ID; else process.env.NAVER_CLIENT_ID = previousId;
@@ -115,17 +115,17 @@ test("multi-month Naver request fetches each keyword once without pretending dat
 test("portal pagination can accept a later relevant snippet for a previously rejected URL", async () => {
   const previousGet = axios.get;
   const pageCalls = { daum: 0, naver: 0 };
-  axios.get = (async (url: string, config: {params: {q?: string; query?: string; page?: number; start?: number}}) => {
+  axios.get = (async (url: string, config: {params: {q?: string; query?: string; p?: number; start?: number}}) => {
     if ((config.params.q ?? config.params.query) !== COLLECTION_KEYWORDS[0]) {
       return { data: "검색결과가 없습니다" };
     }
     const daum = url.includes("daum.net");
     pageCalls[daum ? "daum" : "naver"]++;
-    const page = daum ? config.params.page : config.params.start;
+    const page = daum ? config.params.p : config.params.start;
     const snippet = page === 1 ? "노들길 교통 안내" : "노들섬 행사 안내";
     return { data: daum
       ? `<li><div class="item-bundle-mid"><div class="item-title"><strong><a href="https://v.daum.net/v/20260110120000123">행사 안내</a></strong></div><div class="item-contents"><span class="conts-desc">${snippet}</span></div></div></li>`
-      : `<div>2026.01.10.</div><a data-heatmap-target=".tit" href="https://example.com/news">행사 안내</a><a data-heatmap-target=".body" href="https://example.com/news">${snippet}</a>` };
+      : `<div><span class="sds-comps-profile-info-subtext">2026.01.10.</span><a data-heatmap-target=".tit" href="https://example.com/news">행사 안내</a><a data-heatmap-target=".body" href="https://example.com/news">${snippet}</a></div>` };
   }) as typeof axios.get;
   try {
     const daum = await crawlDaumNews("2026-01-01", "2026-01-31");
@@ -152,10 +152,10 @@ test("Daum paginates past mixed, unknown, and malformed dates but stops on an en
     [item("https://v.daum.net/v/20260302120000123"), 0, 1],
   ] as const) {
     let calls = 0;
-    const mockGet = t.mock.method(axios, "get", async (_url: string, config: {params: {q: string; page: number}}) => {
+    const mockGet = t.mock.method(axios, "get", async (_url: string, config: {params: {q: string; p: number}}) => {
       if (config.params.q !== COLLECTION_KEYWORDS[0]) return { data: "검색결과가 없습니다" };
       calls++;
-      return {data: config.params.page === 1 ? old + other : config.params.page === 2 ? next : old};
+      return {data: config.params.p === 1 ? old + other : config.params.p === 2 ? next : old};
     });
     const articles = await crawlDaumNews("2026-04-01", "2026-04-30");
     assert.equal(articles.length, expectedCount);
@@ -176,8 +176,8 @@ test("Daum splits capped short and leap months into nonoverlapping dates and mer
     const parentStart = start.replace(/-/g, ""), parentEnd = end.replace(/-/g, "");
     const requests: Array<{sd: string; ed: string; page: number}> = [];
     const warnings: string[] = [];
-    const mockGet = t.mock.method(axios, "get", async (_url: string, config: {params: {q: string; sd: string; ed: string; page: number}}) => {
-      const {q, sd, ed, page} = config.params;
+    const mockGet = t.mock.method(axios, "get", async (_url: string, config: {params: {q: string; sd: string; ed: string; p: number}}) => {
+      const {q, sd, ed, p: page} = config.params;
       if (q !== COLLECTION_KEYWORDS[0]) return {data:"검색결과가 없습니다"};
       assert.ok(sd.endsWith("000000")); assert.ok(ed.endsWith("235959"));
       requests.push({sd:sd.slice(0,8), ed:ed.slice(0,8), page});
@@ -204,8 +204,8 @@ test("Daum can recursively split a capped child and preserves parent articles wh
   t.mock.method(globalThis, "setTimeout", (callback: () => void) => previousTimeout(callback, 0));
   const firstPages: string[] = [];
   const warnings: string[] = [];
-  t.mock.method(axios, "get", async (_url: string, config: {params: {q: string; sd: string; ed: string; page: number}}) => {
-    const {q, sd, ed, page} = config.params;
+  t.mock.method(axios, "get", async (_url: string, config: {params: {q: string; sd: string; ed: string; p: number}}) => {
+    const {q, sd, ed, p: page} = config.params;
     if (q !== COLLECTION_KEYWORDS[0]) return {data:"검색결과가 없습니다"};
     const start = sd.slice(0,8), end = ed.slice(0,8);
     if (page === 1) firstPages.push(`${start}~${end}`);
@@ -245,7 +245,7 @@ test("Naver follows observed JSON continuation pages for all four keywords and e
     }
     calls.push({query, start});
     const articleUrl = `https://example.com/${COLLECTION_KEYWORDS.indexOf(query as typeof COLLECTION_KEYWORDS[number])}/${start}`;
-    const html = `<div>2026.01.10.</div><a data-heatmap-target=".tit" href="${articleUrl}">${query} 행사 ${start}</a>`;
+    const html = `<div><span class="sds-comps-profile-info-subtext">2026.01.10.</span><a data-heatmap-target=".tit" href="${articleUrl}">${query} 행사 ${start}</a></div>`;
     if (start === 1) {
       const encoded = JSON.stringify(nextUrl(query, 11)).replace(/\//g, "\\/").replace(/&/g, "\\u0026");
       return {data: html + `<script>var xload = new XLoad({"url":${encoded},"insertTarget":"._infinite_list"});</script>`};
@@ -263,8 +263,8 @@ test("Naver stops repeated continuation URLs or result pages and rejects changed
   const previousTimeout = globalThis.setTimeout;
   t.mock.method(globalThis, "setTimeout", (callback: () => void) => previousTimeout(callback, 0));
   const next = "https://s.search.naver.com/p/newssearch/4/api/tab/more?query=" + encodeURIComponent(COLLECTION_KEYWORDS[0]) + "&ds=2026.01.10&de=2026.01.10&pd=3&start=11";
-  const first = '<div>2026.01.10.</div><a data-heatmap-target=".tit" href="https://example.com/first">노들섬 첫 기사</a>';
-  const second = '<div>2026.01.10.</div><a data-heatmap-target=".tit" href="https://example.com/second">노들섬 두 번째 기사</a>';
+  const first = '<div><span class="sds-comps-profile-info-subtext">2026.01.10.</span><a data-heatmap-target=".tit" href="https://example.com/first">노들섬 첫 기사</a></div>';
+  const second = '<div><span class="sds-comps-profile-info-subtext">2026.01.10.</span><a data-heatmap-target=".tit" href="https://example.com/second">노들섬 두 번째 기사</a></div>';
   for (const mode of ["url", "response", "host", "date"] as const) {
     let requests = 0;
     const mockGet = t.mock.method(axios, "get", async (url: string, config: {params?: {query: string}}) => {
@@ -290,14 +290,14 @@ test("full final portal pages record pagination coverage limits", async t => {
   const previousTimeout = globalThis.setTimeout;
   t.mock.method(globalThis, "setTimeout", (callback: () => void) => previousTimeout(callback, 0));
   const pageCalls = {daum: 0, naver: 0};
-  t.mock.method(axios, "get", async (url: string, config: {params?: {q?: string; query?: string; page?: number; start?: number}}) => {
+  t.mock.method(axios, "get", async (url: string, config: {params?: {q?: string; query?: string; p?: number; start?: number}}) => {
     if ((config.params?.q ?? config.params?.query ?? new URL(url).searchParams.get("query")) !== COLLECTION_KEYWORDS[0]) return {data: "검색결과가 없습니다"};
     const daum = url.includes("daum.net");
     pageCalls[daum ? "daum" : "naver"]++;
-    const page = daum ? config.params!.page! : config.params?.start ?? Number(new URL(url).searchParams.get("start"));
+    const page = daum ? config.params!.p! : config.params?.start ?? Number(new URL(url).searchParams.get("start"));
     const html = Array.from({length: 10}, (_, index) => daum
       ? `<li><div><div class="item-title"><a href="https://v.daum.net/v/202601101200${page * 10 + index}">노들섬 행사 ${page}-${index}</a></div></div></li>`
-      : `<div>2026.01.10.</div><a data-heatmap-target=".tit" href="https://example.com/${page}/${index}">노들섬 행사 ${page}-${index}</a>`).join("");
+      : `<div><span class="sds-comps-profile-info-subtext">2026.01.10.</span><a data-heatmap-target=".tit" href="https://example.com/${page}/${index}">노들섬 행사 ${page}-${index}</a></div>`).join("");
     const next = `https://s.search.naver.com/p/newssearch/4/api/tab/more?query=${encodeURIComponent(COLLECTION_KEYWORDS[0])}&ds=2026.01.01&de=2026.01.31&pd=3&start=${page + 10}`;
     return {data:daum ? html : JSON.stringify({collection:[{html}],url:next})};
   });

@@ -1,3 +1,8 @@
+import { crawlAllSourcesPaced } from "./pacedSources";
+import { crawlDateChunks, settleSequentially } from "./crawlPacing";
+import { createRelevanceReview } from "./relevanceReview";
+import {crawlOfficialArchives} from "./officialArchives";
+import { loadExistingArticles } from "./existingArticles";
 import { db } from "@workspace/db";
 import { articlesTable, crawlJobsTable } from "@workspace/db";
 import { eq } from "drizzle-orm";
@@ -5,37 +10,25 @@ import { crawlWarnings, validateDateRange, warnSource } from "./crawlRuntime";
 import { withCrawlLock } from "./crawlLock";
 import { logger } from "./logger";
 import {
-  isRelevant,
-  isDuplicate,
-  addToSet,
   isValidUrl,
   ArticleData,
 } from "./crawlerUtils";
 import { analyzeArticleSentiment } from "./aiAnalysis";
 import { crawlAllSources, crawlNaverNews, crawlDaumNews, crawlNaverWebSearch } from "./crawlerSources";
-import { crawlAllSourcesPaced } from "./pacedSources";
-import { crawlDateChunks, sleepWithJitter } from "./crawlPacing";
-import { enrichArticlePublisher } from "./publisherResolver";
-import { loadExistingArticles, refreshExcludedArticle } from "./existingArticles";
+import { enrichArticles } from "./publisherResolver";
 import { withGoogleRssPolicy } from "./googleRssPolicy";
 
 export interface CrawlJobDependencies {
+  reviewOnly?: boolean;
+  alternative?: boolean;
   db?: typeof db;
   analyzeArticleSentiment?: typeof analyzeArticleSentiment;
   crawlAllSources?: typeof crawlAllSources;
   crawlNaverNews?: typeof crawlNaverNews;
   crawlDaumNews?: typeof crawlDaumNews;
   crawlNaverWebSearch?: typeof crawlNaverWebSearch;
-}
-
-async function settle<T>(task: () => Promise<T>): Promise<PromiseSettledResult<T>> {
-  try { return { status: "fulfilled", value: await task() }; }
-  catch (reason) { return { status: "rejected", reason }; }
-}
-
-function shouldUseNaverApi(endDate: string): boolean {
-  const end = new Date(`${endDate}T23:59:59+09:00`).getTime();
-  return Date.now() - end <= 21 * 86400_000;
+  enrichArticles?: typeof enrichArticles;
+  createRelevanceReview?: typeof createRelevanceReview;
 }
 
 export async function runCrawlJob(
@@ -58,14 +51,14 @@ async function executeCrawlJob(
 ): Promise<void> {
   const database = dependencies.db ?? db;
   const analyze = dependencies.analyzeArticleSentiment ?? analyzeArticleSentiment;
-  const crawlSources = {
-    all: dependencies.crawlAllSources ?? crawlAllSourcesPaced,
-    naver: dependencies.crawlNaverNews ?? crawlNaverNews,
+  const crawlSources = dependencies.reviewOnly ? {all: async () => [], naver: async () => [], daum: async () => [], naverWeb: async () => []} : {
+    all: dependencies.crawlAllSources ?? (dependencies.alternative ? crawlOfficialArchives : crawlAllSourcesPaced),
+    naver: dependencies.crawlNaverNews ?? (dependencies.alternative ? async()=>[] : crawlNaverNews),
     daum: dependencies.crawlDaumNews ?? crawlDaumNews,
-    naverWeb: dependencies.crawlNaverWebSearch ?? crawlNaverWebSearch,
+    naverWeb: dependencies.crawlNaverWebSearch ?? (dependencies.alternative ? async()=>[] : crawlNaverWebSearch),
   };
-  const existing = await loadExistingArticles(database);
-  const { existingSet } = existing;
+  const existingArticles = await loadExistingArticles(database);
+  const review = await (dependencies.createRelevanceReview || createRelevanceReview)(dependencies.db ? {directory: false, maxRequests: 0} : {});
   let totalCollected = 0;
   let totalDuplicates = 0;
   let totalRefreshed = 0;
@@ -74,34 +67,17 @@ async function executeCrawlJob(
 
   await database
     .update(crawlJobsTable)
-    .set({ currentSource: "기간을 나눠 네이버·다음·뉴스 검색을 순차 수집 중…", progress: 5 })
+    .set({ currentSource: dependencies.alternative ? "언론사 자체검색 + 다음 검색으로 보완 중…" : "네이버 API·웹 + 다음 웹 + RSS 수집 중…", progress: 5 })
     .where(eq(crawlJobsTable.id, jobId));
 
-  logger.info({ jobId, startDate, endDate }, "Starting paced crawl");
+  logger.info({ jobId }, "Starting paced crawl: Naver API + Daum API + RSS sources");
 
-  const useNaverApi = dependencies.crawlNaverNews ? true : shouldUseNaverApi(endDate);
-  const naverApiRes = useNaverApi
-    ? await settle(() => crawlSources.naver(startDate, endDate))
-    : ({ status: "fulfilled", value: [] } as PromiseFulfilledResult<ArticleData[]>);
-  if (!useNaverApi) {
-    warnSource("네이버 API", "과거 기간은 날짜 조건을 지원하지 않는 API 대신 네이버 웹 날짜 검색을 사용합니다.");
-  }
-
-  const naverWebRes = await settle(() => dependencies.crawlNaverWebSearch
-    ? crawlSources.naverWeb(startDate, endDate)
-    : crawlDateChunks("네이버 웹", crawlSources.naverWeb, startDate, endDate, {
-        days: 7, pauseMinMs: 2200, pauseMaxMs: 4200,
-      }));
-  if (!dependencies.db) await sleepWithJitter(2200, 4200);
-
-  const daumRes = await settle(() => dependencies.crawlDaumNews
-    ? crawlSources.daum(startDate, endDate)
-    : crawlDateChunks("다음 웹", crawlSources.daum, startDate, endDate, {
-        days: 7, pauseMinMs: 2200, pauseMaxMs: 4200,
-      }));
-  if (!dependencies.db) await sleepWithJitter(2200, 4200);
-
-  const rssRes = await settle(() => crawlSources.all(startDate, endDate));
+  const [naverApiRes, naverWebRes, daumRes, rssRes] = await settleSequentially([
+    () => dependencies.crawlNaverNews || Date.now() - Date.parse(`${endDate}T23:59:59+09:00`) <= 21 * 86400_000 ? crawlSources.naver(startDate, endDate) : Promise.resolve([] as ArticleData[]),
+    () => dependencies.db || dependencies.reviewOnly ? crawlSources.naverWeb(startDate, endDate) : crawlDateChunks("네이버 웹", crawlSources.naverWeb, startDate, endDate),
+    () => dependencies.db || dependencies.reviewOnly ? crawlSources.daum(startDate, endDate) : crawlDateChunks("다음", crawlSources.daum, startDate, endDate),
+    () => crawlSources.all(startDate, endDate),
+  ], dependencies.db || dependencies.reviewOnly ? 0 : 2000);
 
   const naverApiResults = naverApiRes.status === "fulfilled" ? naverApiRes.value : [];
   const naverWebResults = naverWebRes.status === "fulfilled" ? naverWebRes.value : [];
@@ -113,41 +89,48 @@ async function executeCrawlJob(
   if (daumRes.status     === "rejected") logger.error({ err: daumRes.reason,     jobId }, "Daum crawl failed");
   if (rssRes.status      === "rejected") logger.error({ err: rssRes.reason,      jobId }, "RSS crawl failed");
 
-  const articles: ArticleData[] = [...naverApiResults, ...naverWebResults, ...daumResults, ...rssResults];
+  const candidates: ArticleData[] = [...review.retryCandidates(startDate, endDate), ...naverApiResults, ...naverWebResults, ...daumResults, ...rssResults];
+  await database.update(crawlJobsTable).set({ currentSource: "원문 링크와 언론사 확인 중…", progress: 50 }).where(eq(crawlJobsTable.id, jobId));
+  const enrich = dependencies.enrichArticles ?? (dependencies.db ? async (items: ArticleData[]) => items : enrichArticles);
+  const articles = await enrich(candidates, { maxRequests: 180 });
   for (const [name, result] of [["네이버 API", naverApiRes], ["네이버 웹", naverWebRes], ["다음", daumRes], ["RSS", rssRes]] as const) {
     if (result.status === "rejected") warnSource(name, "수집 요청 실패 (서버 로그 확인)");
   }
-  const sourceCounts = `네이버API ${naverApiResults.length}, 네이버웹 ${naverWebResults.length}, 다음 ${daumResults.length}, RSS·구글 ${rssResults.length}`;
+  const sourceCounts = dependencies.alternative ? `구글 제외 보완: 공식 검색 ${rssResults.length}, 다음 ${daumResults.length}` : `네이버API ${naverApiResults.length}, 네이버웹 ${naverWebResults.length}, 다음 ${daumResults.length}, RSS·자체검색 ${rssResults.length}`;
 
   await database
     .update(crawlJobsTable)
-    .set({ currentSource: "원문 언론사 확인·중복 제거·DB 저장 중…", progress: 60 })
+    .set({
+      currentSource: "중복 제거 및 DB 저장 중…",
+      progress: 60,
+    })
     .where(eq(crawlJobsTable.id, jobId));
 
   logger.info(
     { jobId, naverApi: naverApiResults.length, naverWeb: naverWebResults.length, daum: daumResults.length, rss: rssResults.length, total: articles.length },
-    "Crawl complete, enriching publishers and deduplicating",
+    "Crawl complete, deduplicating",
   );
 
-  for (const candidate of articles) {
-    if (!isRelevant(candidate.title, candidate.content) || !isValidUrl(candidate.url) || !Number.isFinite(candidate.publishedAt.getTime())) {
-      filtered++;
-      continue;
-    }
-    const article = dependencies.db ? candidate : await enrichArticlePublisher(candidate);
-    try {
-      if (await refreshExcludedArticle(database, existing, article)) { totalRefreshed++; continue; }
-    } catch (err) {
-      insertFailures++;
-      logger.error({ err }, "Failed to refresh excluded article");
-      continue;
-    }
-    if (isDuplicate(article.url, article.title, article.publishedAt, existingSet, article.source, article.mediaName)) {
+  for (const [articleIndex, candidate] of articles.entries()) {
+    let article = candidate;
+    if (!isValidUrl(article.url) || !Number.isFinite(article.publishedAt.getTime())) { filtered++; continue; }
+    const reviewExisting = existingArticles.needsReview(article);
+    if (reviewExisting) article = (await review.assess(article)).article;
+    try { if (await existingArticles.refresh(article)) { totalRefreshed++; await review.delivered(article); continue; } }
+    catch (err) { insertFailures++; logger.error({err}, "Failed to refresh existing article"); continue; }
+    if (await existingArticles.duplicate(article, candidates[articleIndex]?.url)) {
       totalDuplicates++;
+      if (!reviewExisting) await review.delivered(article);
       continue;
     }
 
-    const isNegative = await analyze(article.title, article.content);
+    const assessed = await review.assess(article);
+    if (assessed.decision.status !== "related") { filtered++; continue; }
+    article = assessed.article;
+    const isNegative = await analyze(
+      article.title,
+      article.content,
+    );
 
     try {
       await database.insert(articlesTable).values({
@@ -161,36 +144,49 @@ async function executeCrawlJob(
         source: article.source,
       });
       totalCollected++;
-      addToSet(article.url, article.title, article.publishedAt, existingSet, article.source, article.mediaName);
+      existingArticles.remember(article);
+      await review.delivered(article);
     } catch (err: unknown) {
+      // Postgres duplicate-key code (23505) may be on the error itself or nested
+      // under .cause (Drizzle wraps the original pg error in _DrizzleQueryError).
       const e = err as { code?: string; cause?: { code?: string }; message?: string };
       const code = e?.code ?? e?.cause?.code;
       const isDupe =
-        code === "23505" || code === "P2002" ||
+        code === "23505" ||
+        code === "P2002" ||
         (e?.message?.includes("duplicate key") ?? false) ||
         (e?.message?.includes("articles_url_unique") ?? false);
-      if (isDupe) totalDuplicates++;
-      else { insertFailures++; logger.error({ err }, "Failed to insert article"); }
+      if (isDupe) {
+        totalDuplicates++;
+      } else {
+        insertFailures++;
+        logger.error({ err }, "Failed to insert article");
+      }
     }
 
-    if (totalCollected > 0 && totalCollected % 20 === 0) {
-      const progress = Math.min(95, 60 + Math.round((totalCollected / Math.max(articles.length, 1)) * 35));
-      await database.update(crawlJobsTable)
+    if (totalCollected % 20 === 0) {
+      const progress = Math.min(
+        95,
+        60 + Math.round((totalCollected / Math.max(articles.length, 1)) * 35),
+      );
+      await database
+        .update(crawlJobsTable)
         .set({ collected: totalCollected, duplicates: totalDuplicates, progress })
         .where(eq(crawlJobsTable.id, jobId));
     }
   }
 
+  await review.flush().catch(() => {});
   await database
     .update(crawlJobsTable)
     .set({
-      status: insertFailures > 0 || (articles.length === 0 && (crawlWarnings.getStore()?.length ?? 0) > 0) ? "error" : "done",
+      status: insertFailures > 0 || (dependencies.alternative && (crawlWarnings.getStore()?.length ?? 0)>0) || (articles.length === 0 && (crawlWarnings.getStore()?.length ?? 0) > 0) ? "error" : "done",
       progress: 100,
       currentSource: "",
       total: articles.length,
       collected: totalCollected,
       duplicates: totalDuplicates,
-      error: [sourceCounts, `필터 제외 ${filtered}, 기존 기사 내용 갱신 ${totalRefreshed}, 저장 실패 ${insertFailures}`, ...(crawlWarnings.getStore() ?? [])].join("\n"),
+      error: [sourceCounts, `필터 제외 ${filtered}, 저장 실패 ${insertFailures}`, review.summary(), existingArticles.summary(), ...(crawlWarnings.getStore() ?? [])].join("\n"),
     })
     .where(eq(crawlJobsTable.id, jobId));
 

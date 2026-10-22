@@ -1,3 +1,4 @@
+import { RelevanceReview } from "@/components/relevance-review";
 import React, { useState, useEffect } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -17,6 +18,8 @@ import { Badge } from "@/components/ui/badge";
 import { Link } from "wouter";
 
 interface RecentJob { id: string; status: string; collected: number; duplicates: number; error: string; createdAt: string; }
+interface SourceHealth { checkedAt: string | null; sources: { name: string; domain: string; method: string; status: string; reason: string; endpoint?: string; kind?: string; itemCount?: number }[]; }
+const sourceReasons: Record<string,string> = {official_feed_available:"공식 피드 정상 응답 · 최신 기사 범위 내 수집", advertised_news_sitemap:"공식 뉴스 사이트맵으로 보완 · 최근 기사 범위만 지원", recovered_official_feed:"공식 페이지에서 대체 피드를 발견해 복구", missing_publication_dates:"발행일 누락 · 기간 판정이 어려워 포털 검색으로 보완", sitemap_found_without_titles_and_publication_dates:"사이트맵은 있으나 기사 제목·발행일이 없어 직접 수집 제한", no_usable_official_feed:"제한된 점검 안에서 사용 가능한 공식 피드를 찾지 못함"};
 
 type JobMode = "manual" | "bulk";
 
@@ -33,6 +36,16 @@ function getCrawlStartErrorMessage(error: unknown): string {
 
 export default function Crawl() {
   const { toast } = useToast();
+  const {data:providerHealth}=useQuery<Record<string,{status:string;reason:string;checkedAt:string;blockedUntil?:string}>>({queryKey:['provider-health'],queryFn:async()=>{const r=await fetch('/api/crawl/provider-health');if(!r.ok)throw new Error('연결 상태 조회 실패');return r.json();}});
+  const { data: sourceHealth } = useQuery<SourceHealth>({
+    queryKey: ["source-health"],
+    queryFn: async () => {
+      const response = await fetch("/api/crawl/source-health");
+      if (!response.ok) throw new Error("소스 점검 결과 조회 실패");
+      return response.json();
+    },
+    staleTime: 60_000,
+  });
   const queryClient = useQueryClient();
   const { data: configuration } = useQuery<{
     crawlIntervalMinutes: number;
@@ -56,17 +69,12 @@ export default function Crawl() {
     },
   });
 
-  const today = new Date();
-  const lastWeek = new Date();
-  lastWeek.setDate(today.getDate() - 7);
-
-  const [startDate, setStartDate] = useState(lastWeek.toISOString().split("T")[0]);
-  const [endDate, setEndDate] = useState(today.toISOString().split("T")[0]);
-
-  const fiveYearsAgo = new Date();
-  fiveYearsAgo.setFullYear(today.getFullYear() - 5);
-  const [bulkStartDate, setBulkStartDate] = useState(fiveYearsAgo.toISOString().split("T")[0]);
-  const [bulkEndDate, setBulkEndDate] = useState(today.toISOString().split("T")[0]);
+  const todayKst = new Date(Date.now() + 9 * 3600_000).toISOString().slice(0, 10);
+  const yearStart = `${todayKst.slice(0, 4)}-01-01`;
+  const [startDate, setStartDate] = useState(yearStart);
+  const [endDate, setEndDate] = useState(todayKst);
+  const [bulkStartDate, setBulkStartDate] = useState(yearStart);
+  const [bulkEndDate, setBulkEndDate] = useState(todayKst);
 
   const [activeJobId, setActiveJobId] = useState<string | null>(null);
   const [activeMode, setActiveMode] = useState<JobMode>("manual");
@@ -100,7 +108,7 @@ export default function Crawl() {
       });
       setShowCompletionModal(true);
       setActiveJobId(null);
-      void queryClient.invalidateQueries({ queryKey: ["crawl-recent"] });
+      void queryClient.invalidateQueries();
     } else if (jobStatus?.status === "error") {
       toast({
         title: "수집 실패",
@@ -108,10 +116,15 @@ export default function Crawl() {
         variant: "destructive",
       });
       setActiveJobId(null);
-      void queryClient.invalidateQueries({ queryKey: ["crawl-recent"] });
+      void queryClient.invalidateQueries();
     }
   }, [jobStatus?.status, toast, queryClient]);
 
+  const [alternativePending,setAlternativePending]=useState(false);
+  const handleAlternative=async()=>{
+    if(!startDate||!endDate)return;setAlternativePending(true);setFinalStats(null);setActiveMode('manual');
+    try{const r=await fetch('/api/crawl/start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({startDate,endDate,alternative:true})});const data=await r.json();if(!r.ok)throw new Error(data.error||'수집 시작 실패');setActiveJobId(data.jobId);toast({title:'구글 제외 보완 시작',description:'매일경제·서울신문 자체 검색과 다음 검색을 대조합니다.'});}catch(error){toast({title:'보완 시작 실패',description:String(error),variant:'destructive'});}finally{setAlternativePending(false);}
+  };
   const handleStartCrawl = () => {
     if (!startDate || !endDate) return;
     setFinalStats(null);
@@ -121,7 +134,7 @@ export default function Crawl() {
       {
         onSuccess: (data) => {
           setActiveJobId(data.jobId);
-          void queryClient.invalidateQueries({ queryKey: ["crawl-recent"] });
+          void queryClient.invalidateQueries();
           toast({ title: "수집 시작", description: "등록된 검색·RSS 수집처를 확인합니다. 실패 내역은 수집 이력에 표시됩니다." });
         },
         onError: (error) => {
@@ -140,7 +153,7 @@ export default function Crawl() {
       {
         onSuccess: (data) => {
           setActiveJobId(data.jobId);
-          void queryClient.invalidateQueries({ queryKey: ["crawl-recent"] });
+          void queryClient.invalidateQueries();
           toast({ title: "대량 수집 시작", description: "월별로 나눠 순차 수집합니다. 시간이 걸릴 수 있습니다." });
         },
         onError: (error) => {
@@ -150,7 +163,7 @@ export default function Crawl() {
     );
   };
 
-  const isRunning = activeJobId !== null || startCrawl.isPending || startBulkCrawl.isPending;
+  const isRunning = alternativePending || activeJobId !== null || startCrawl.isPending || startBulkCrawl.isPending;
   const currentSource = jobStatus?.currentSource || "";
 
   function getBulkMonthCount(): number {
@@ -196,6 +209,35 @@ export default function Crawl() {
         </CardContent>
       </Card>
 
+      <RelevanceReview disabled={isRunning} onRetry={async () => {
+        try {
+          const response = await fetch('/api/crawl/start', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({startDate, endDate, reviewOnly: true})});
+          const result = await response.json();
+          if (!response.ok) throw new Error(result.error || '재확인 시작 실패');
+          setActiveMode('manual'); setActiveJobId(result.jobId);
+          toast({title: '대기 후보 재확인 시작', description: '선택한 기간의 재시도 가능한 후보를 확인합니다.'});
+        } catch (error) { toast({title: '재확인 시작 실패', description: error instanceof Error ? error.message : String(error), variant: 'destructive'}); }
+      }} />
+      {providerHealth && Object.keys(providerHealth).length>0 && <Card><CardHeader><CardTitle>검색 수집처 연결 상태</CardTitle><CardDescription>실제 응답으로 확인한 최근 상태입니다. 요청 휴식 종료는 서비스의 제한 해제를 보장하지 않습니다.</CardDescription></CardHeader><CardContent className="space-y-3">{Object.entries(providerHealth).map(([key,state])=><div key={key}><strong>{key==='google_news'?'구글뉴스':key==='naver_web'?'네이버 뉴스':key==='daum_web'?'다음 뉴스':key==='archive_mk'?'매일경제 자체검색':key==='archive_seoul'?'서울신문 자체검색':key}</strong> · {state.status==='ok'?'정상':state.status==='limited'?'접근 제한':'확인 필요'}<p>{state.reason}</p><p className="text-sm text-muted-foreground">확인: {new Date(state.checkedAt).toLocaleString('ko-KR')}{state.blockedUntil && Date.parse(state.blockedUntil)>Date.now() && <> · 앱 요청 휴식: {new Date(state.blockedUntil).toLocaleString('ko-KR')}까지</>}</p></div>)}</CardContent></Card>}
+      {sourceHealth?.checkedAt && sourceHealth.sources.length > 0 && <Card>
+        <CardHeader>
+          <CardTitle>언론사 원문 소스 점검</CardTitle>
+          <CardDescription>{new Date(sourceHealth.checkedAt).toLocaleString("ko-KR", { timeZone: "Asia/Seoul" })} 기준 · 아래 상태는 직접 수집 지원 여부입니다.</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-3 text-sm">
+          <p className="text-muted-foreground">RSS에 검색 기간의 기사가 없더라도 원문 사이트에 기사가 없다는 뜻은 아닙니다. 최신 RSS·Atom·뉴스 사이트맵과 포털 검색의 보관 범위가 다릅니다. 포털로 발견한 기사는 원문 링크와 언론사명을 확인하며 수집 경로는 그대로 표시합니다.</p>
+          <details><summary className="cursor-pointer font-medium">전체 {sourceHealth.sources.length}개 소스 상태 보기</summary>
+            <div className="mt-3 max-h-96 overflow-auto divide-y">
+              {sourceHealth.sources.map((source, index) => <div key={`${source.domain}-${index}`} className="py-3 space-y-1">
+                <p className="font-medium">{source.name} · {source.status === "normal" ? "정상" : source.status === "partial" ? "부분지원" : "미지원 / 현재 확인 실패"}</p>
+                <p className="text-muted-foreground break-words">{sourceReasons[source.reason] || source.reason}</p>
+                {source.endpoint && /^https?:\/\//.test(source.endpoint) && <a href={source.endpoint} target="_blank" rel="noreferrer" className="underline break-all">확인한 소스 열기</a>}
+              </div>)}
+            </div>
+          </details>
+        </CardContent>
+      </Card>}
+
       {/* Manual crawl */}
       <Card>
         <CardHeader>
@@ -226,6 +268,8 @@ export default function Crawl() {
             ) : "크롤링 실행"}
           </Button>
 
+          <Button className="w-full" variant="outline" onClick={handleAlternative} disabled={isRunning || !startDate || !endDate}>구글 없이 과거 기사 보완</Button>
+          <p className="text-xs text-muted-foreground">위 기간의 매일경제·서울신문 자체 검색과 다음 검색을 대조합니다. 같은 수집 경로와 URL이 모두 일치할 때만 중복 제외하며, 다른 언론사 전체의 수집을 보장하지는 않습니다.</p>
           {isRunning && activeMode === "manual" && jobStatus && (
             <div className="space-y-4 p-4 rounded-lg bg-muted/40 border">
               <div className="space-y-2">

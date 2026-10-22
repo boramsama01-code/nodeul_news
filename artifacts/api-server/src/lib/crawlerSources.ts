@@ -1,22 +1,50 @@
+import { mapInPacedBatches } from "./crawlPacing";
+import { hasDiscoveryKeyword } from "./relevance";
+import {crawlOfficialArchives} from "./officialArchives";
+import { fetchGoogleFeedXml, classifyProviderResponse, recordProviderHealth, readProviderHealth, providerResponseEvidence } from "./providerHealth";
 import Parser from "rss-parser";
 import axios, { AxiosResponse } from "axios";
 import * as cheerio from "cheerio";
 import { logger } from "./logger";
-import { isRelevant, stripHtml, isValidUrl, resolveMediaName, resolveMediaNameStrict, ArticleData } from "./crawlerUtils";
+import { stripHtml, isRelevant, isValidUrl, resolveMediaName, resolveMediaNameStrict, cleanPublisherName, ArticleData } from "./crawlerUtils";
 import { NEWS_SOURCES, GOOGLE_NEWS_SOURCES, NewsSource } from "./rssFeedList";
 import { googleFeedUrl, kstDate, mapConcurrent, parseRssPublishedAt, shiftDate, warnSource, validateDateRange } from "./crawlRuntime";
 import { COLLECTION_KEYWORDS, GOOGLE_NEWS_QUERY } from "./newsRelevance";
 import { fetchRssFeed } from "./rssFeedCache";
 import { requestGoogleRss, GoogleRssCircuitOpenError } from "./googleRssPolicy";
+import { loadOfficialFeed, coverageForRange, type OfficialFeedItem } from "./sourceFeeds";
 
 const TIMEOUT_MS = 30000;
 
 const rssParser = new Parser({
-  timeout: TIMEOUT_MS,
+  timeout: 12000,
   customFields: {
     item: [["source", "source"], ["dc:creator", "creator"]],
   },
 });
+
+// Shared fallback queries (e.g. nine sections of one paper) are fetched once.
+const googleFeeds = new Map<string, { expires: number; value: Promise<Awaited<ReturnType<typeof rssParser.parseURL>>> }>();
+function loadGoogleFeed(url: string) {
+  const cached=googleFeeds.get(url);
+  if(cached && cached.expires>Date.now())return cached.value;
+  const value=fetchGoogleFeedXml(url).then(xml=>rssParser.parseString(xml));
+  googleFeeds.set(url,{expires:Date.now()+30*60_000,value});
+  // Errors are governed by the shared provider cooldown rather than a stale promise.
+  value.catch(()=>{if(googleFeeds.get(url)?.value===value)googleFeeds.delete(url);});
+  if(googleFeeds.size>500)googleFeeds.delete(googleFeeds.keys().next().value!);
+  return value;
+}
+
+export function googlePublisher(item: { title?: string; source?: unknown }): { title: string; publisher: string } {
+  const title = stripHtml(item.title || "");
+  const source = item.source;
+  const supplied = typeof source === "string" ? source : source && typeof source === "object"
+    ? String((source as Record<string, unknown>)._ || (source as Record<string, unknown>).name || "") : "";
+  const sep = title.lastIndexOf(" - ");
+  const publisher = stripHtml(supplied || (sep > 0 ? title.slice(sep + 3) : ""));
+  return { title: sep > 0 && title.slice(sep + 3).trim() === publisher ? title.slice(0, sep).trim() : title, publisher };
+}
 
 // 배포 환경의 간헐적 네트워크 실패(timeout 등)를 흡수하는 재시도 래퍼
 async function withRetry<T>(fn: () => Promise<T>, retries = 2, delayMs = 1500): Promise<T> {
@@ -27,7 +55,7 @@ async function withRetry<T>(fn: () => Promise<T>, retries = 2, delayMs = 1500): 
     } catch (err) {
       lastErr = err;
       const status = (err as { response?: { status?: number } })?.response?.status;
-      if (status && status >= 400 && status < 500 && status !== 429) throw err;
+      if (status && status >= 400 && status < 500) throw err;
       if (attempt < retries) await new Promise((r) => setTimeout(r, delayMs * (attempt + 1)));
     }
   }
@@ -38,11 +66,23 @@ async function withRetry<T>(fn: () => Promise<T>, retries = 2, delayMs = 1500): 
 function kstStart(dateStr: string): Date { return new Date(dateStr + "T00:00:00+09:00"); }
 function kstEnd(dateStr: string): Date   { return new Date(dateStr + "T23:59:59.999+09:00"); }
 
+function uniqueCandidates(articles: ArticleData[]): ArticleData[] {
+  const byUrl = new Map<string, ArticleData>();
+  for (const article of articles) {
+    const key = JSON.stringify([article.source, article.url]);
+    const old = byUrl.get(key);
+    if (!old || (!isRelevant(old.title, old.content) && isRelevant(article.title, article.content))) byUrl.set(key, article);
+  }
+  return [...byUrl.values()];
+}
+
 export async function crawlSource(
   source: NewsSource,
   startDate: string,
   endDate: string,
+  dependencies: { loadFeed?: () => Promise<{items: OfficialFeedItem[]}> } = {},
 ): Promise<ArticleData[]> {
+  validateDateRange(startDate, endDate);
   const start = kstStart(startDate);
   const end   = kstEnd(endDate);
 
@@ -50,10 +90,13 @@ export async function crawlSource(
 
   try {
     const url = source.method === "google_news_rss" ? googleFeedUrl(source.url, startDate, endDate) : source.url;
-    const loadFeed = () => withRetry(() => rssParser.parseURL(url), 1);
-    const feed = await fetchRssFeed(source.method, url, () => source.method === "google_news_rss"
-      ? requestGoogleRss(startDate, endDate, loadFeed) : loadFeed());
+    const official = source.method === "rss_direct" && !dependencies.loadFeed ? await fetchRssFeed(source.method, url, () => loadOfficialFeed(source)) : null;
+    const feed = dependencies.loadFeed ? await dependencies.loadFeed() : official ? official.feed : await requestGoogleRss(startDate, endDate, () => loadGoogleFeed(url));
+    if (official) {
+      logger.info({source: source.name, status: official.status, reason: official.reason, items: feed.items.length, coverage: coverageForRange(official, startDate, endDate)}, "Official feed checked");
+    }
 
+    if(source.method==='google_news_rss' && (feed.items?.length||0)>=100 && startDate<endDate)warnSource(source.name,'검색 피드 100건 상한 가능성: 짧은 기간으로 재점검 필요');
     for (const item of feed.items || []) {
       try {
         const title = stripHtml(item.title || "");
@@ -66,8 +109,10 @@ export async function crawlSource(
         const url = item.link || "";
         if (!isValidUrl(url)) continue;
 
-        // Search engines can return related terms: validate every channel's text.
-        if (!isRelevant(title, content)) continue;
+        // rss_direct: filter by keyword; google_news_rss: already filtered
+        if (source.method === "rss_direct") {
+          if (!hasDiscoveryKeyword(title, content)) continue;
+        }
 
         const pubDate = parseRssPublishedAt(item);
         if (!pubDate) {
@@ -80,14 +125,9 @@ export async function crawlSource(
         let mediaName: string;
         if (source.method === "google_news_rss") {
           // 구글뉴스 제목: "기사제목 - 언론사" → 마지막 " - " 기준 분리
-          const sep = title.lastIndexOf(" - ");
-          if (sep > 0) {
-            const press = title.slice(sep + 3).trim();
-            finalTitle = title.slice(0, sep).trim();
-            mediaName = `구글뉴스(${press || "기타"})`;
-          } else {
-            mediaName = "구글뉴스(기타)";
-          }
+          const parsed = googlePublisher(item);
+          finalTitle = parsed.title;
+          mediaName = `구글뉴스(${parsed.publisher || "기타"})`;
         } else {
           // rss_direct: source.name이 곧 언론사명 (단독 표기)
           mediaName = source.name;
@@ -106,6 +146,14 @@ export async function crawlSource(
       } catch {
         // skip bad items silently
       }
+    }
+    // A working latest-only feed cannot answer an older date-range query.
+    // Search supplementation retains google_news_rss provenance.
+    if (official && (!feed.items.length || !official.oldestPublishedAt || start < new Date(official.oldestPublishedAt))) {
+      warnSource(source.name, "직접 피드의 보관 범위 밖 또는 피드 미지원: 구글뉴스 검색으로 기간을 보완합니다. 원문에 기사가 없다는 뜻은 아닙니다.");
+      const fallback = new URL("https://news.google.com/rss/search?hl=ko&gl=KR&ceid=KR:ko");
+      fallback.searchParams.set("q", `(${GOOGLE_NEWS_QUERY}) site:${source.domain}`);
+      results.push(...await crawlSource({ ...source, name: `${source.name} (구글 보완)`, method: "google_news_rss", url: fallback.toString() }, startDate, endDate));
     }
   } catch (err) {
     if (err instanceof GoogleRssCircuitOpenError) return [];
@@ -216,7 +264,6 @@ async function crawlNaverQueryForMonth(
         const url = item.originallink || item.link;
 
         if (!title || !isValidUrl(url)) continue;
-        if (!isRelevant(title, content)) continue;
 
         const pubDate = new Date(item.pubDate);
         if (isNaN(pubDate.getTime())) continue;
@@ -228,7 +275,7 @@ async function crawlNaverQueryForMonth(
           content,
           url,
           publishedAt: pubDate,
-          mediaName: "네이버뉴스",
+          mediaName: `네이버(${resolveMediaNameStrict(url) || "기타"})`,
           isNegative: false,
           isSelfPR: false,
           source: "naver_api",
@@ -282,7 +329,7 @@ export async function crawlNaverNews(
     }
 
   logger.info({ total: allResults.length }, "Naver News crawl complete");
-  return allResults;
+  return uniqueCandidates(allResults);
 }
 
 export async function crawlAllSources(
@@ -290,8 +337,8 @@ export async function crawlAllSources(
   endDate: string,
 ): Promise<ArticleData[]> {
   validateDateRange(startDate, endDate);
-  const results = await mapConcurrent(NEWS_SOURCES, 4, source => crawlSource(source, startDate, endDate));
-  return results.flat();
+  const results = await mapInPacedBatches(NEWS_SOURCES, source => crawlSource(source, startDate, endDate), {concurrency:2,batchSize:4});
+  return [...results.flat(), ...await crawlOfficialArchives(startDate,endDate)];
 }
 
 // Google News-only crawl used for repairing historical imports without
@@ -323,6 +370,11 @@ async function crawlDaumWebForMonth(
   startDate: string,
   endDate: string,
 ): Promise<ArticleData[]> {
+  const state = (await readProviderHealth()).daum_web;
+  if (state?.blockedUntil && Date.parse(state.blockedUntil) > Date.now()) {
+    warnSource('다음', state.reason + ' — 앱 요청 휴식 중');
+    return [];
+  }
   const results: ArticleData[] = [];
   const seenUrls = new Set<string>(); // Only accepted articles suppress later candidates.
   const seenPages = new Set<string>();
@@ -335,14 +387,23 @@ async function crawlDaumWebForMonth(
   for (let page = 1; page <= 20; page++) {
     try {
       const resp = await withRetry<AxiosResponse<string>>(() => axios.get<string>("https://search.daum.net/search", {
-        params: { w: "news", q: query, sort: "recency", period: "u", sd, ed, page },
+        params: { w: "news", q: query, sort: "recency", period: "u", sd, ed, p: page },
         headers: DAUM_HEADERS,
         timeout: 30000,
         responseType: "text",
+        validateStatus: () => true,
       }));
 
+      const status = resp.status ?? 200;
+      const classification = classifyProviderResponse(status, String(resp.data));
+      if (status !== 200 || classification.kind === 'challenge' || classification.kind === 'automated') {
+        await recordProviderHealth('daum_web', {status:'limited', reason:classification.reason, httpStatus:status, checkedAt:new Date().toISOString(), blockedUntil:new Date(Date.now()+6*3600_000).toISOString()});
+        warnSource('다음', classification.reason + ' — 6시간 동안 요청을 쉽니다.');
+        break;
+      }
       const $ = cheerio.load(resp.data as string);
       const items = $(".item-title");
+      if (page === 1 && (items.length || /검색결과가 없습니다|검색 결과가 없습니다|검색된 결과가 없습니다/.test($.text()))) await recordProviderHealth('daum_web', {status:'ok', reason:items.length?'검색 기사 요소 추출 확인':'해당 기간 검색 결과 없음', httpStatus:200, checkedAt:new Date().toISOString()});
       if (items.length === 0) {
         if (page === 1 && !/검색결과가 없습니다|검색 결과가 없습니다|검색된 결과가 없습니다/.test($.text())) {
           warnSource("다음", "기사 요소를 찾지 못했습니다. 차단 또는 페이지 구조 변경을 확인하세요.");
@@ -392,8 +453,7 @@ async function crawlDaumWebForMonth(
 
         const cleanTitle   = stripHtml(title);
         const cleanContent = stripHtml(content);
-        if (!isRelevant(cleanTitle, cleanContent)) return;
-        seenUrls.add(url);
+        if (isRelevant(cleanTitle, cleanContent)) seenUrls.add(url);
 
         results.push({
           title:       cleanTitle,
@@ -431,6 +491,8 @@ async function crawlDaumWebForMonth(
         }
         warnSource("다음", `${query} ${startDate}: 하루 범위에서도 20페이지 탐색 한도 도달 (일부 기사 누락 가능)`);
       }
+      const totalPagesMatch = String(resp.data).match(/totalPage:\s*(\d+)/);
+      if (totalPagesMatch && page >= Number(totalPagesMatch[1])) break;
 
       await new Promise((r) => setTimeout(r, 300));
     } catch (err) {
@@ -440,7 +502,7 @@ async function crawlDaumWebForMonth(
     }
   }
 
-  return results;
+  return uniqueCandidates(results);
 }
 
 export async function crawlDaumNews(
@@ -460,7 +522,7 @@ export async function crawlDaumNews(
   }
 
   logger.info({ total: allResults.length }, "Daum News crawl complete");
-  return allResults;
+  return uniqueCandidates(allResults);
 }
 
 // ── 네이버 뉴스 웹 검색 (날짜 필터 직접 지정) ─────────────────────────────
@@ -498,45 +560,44 @@ export function parseNaverDateText(text: string, now = new Date()): string {
 // Naver search HTML (2025+) uses sds-comps-* design system.
 // Article title links: <a href="ORIG_URL" … data-heatmap-target=".tit"><span …>TITLE</span></a>
 // Date: relative ("N시간 전") or absolute ("YYYY.MM.DD") in next 6000 chars after the title link.
-function extractNaverWebArticles(
-  html: string,
-): Array<{ url: string; title: string; summary: string; dateStr: string }> {
+export function extractNaverWebArticles(html: string, exactSearchDay?: string): Array<{url:string;title:string;summary:string;dateStr:string;publisher:string;coarseDate:boolean}> {
   const $ = cheerio.load(html);
-  const results: Array<{ url: string; title: string; summary: string; dateStr: string }> = [];
-  let searchFrom = 0; // advance to avoid matching same URL twice
-
+  const results: Array<{url:string;title:string;summary:string;dateStr:string;publisher:string;coarseDate:boolean}> = [];
+  const seen = new Set<string>();
+  const clean = (text:string) => text.replace(/새 창 열림/g, "").trim();
   $('a[data-heatmap-target=".tit"]').each((_, el) => {
-    const a = $(el);
-    const rawHref = a.attr("href") ?? "";
-    const url = rawHref.replace(/&amp;/g, "&");
-    const title = a.text().trim();
-    if (!url || !title || !isValidUrl(url)) return;
-
-    // Find position of this anchor in raw HTML (advance past previously processed ones)
-    const anchorSnippet = rawHref.slice(0, 60); // enough to be unique
-    let pos = html.indexOf(anchorSnippet, searchFrom);
-    if (pos < 0) pos = html.indexOf(anchorSnippet); // fallback to start
-    searchFrom = pos + 1;
-
-    // Date: publisher metadata appears ~1000 chars BEFORE the .tit link in Naver's DOM
-    // Look back 2000 chars and forward 500 chars to cover the publisher/date block
-    const lookAhead = html.slice(Math.max(0, pos - 2000), pos + 500);
-    const dateStr = parseNaverDateText(lookAhead);
-    if (!dateStr) return;
-
-    // Summary: the .body sibling anchor (same URL, different heatmap target)
-    const summary = $(`a[data-heatmap-target=".body"]`)
-      .filter((_, el2) => {
-        const h = $(el2).attr("href") ?? "";
-        return h === rawHref || h.replace(/&amp;/g, "&") === url;
-      })
-      .text()
-      .trim();
-
-    results.push({ url, title, summary, dateStr });
+    const a=$(el), url=a.attr("href") || "", title=clean(a.text());
+    if (!isValidUrl(url) || !title || seen.has(url)) return;
+    seen.add(url);
+    // Scope metadata to one news card, never the previous article's raw HTML.
+    const card=a.parents().filter((_, node)=>$(node).find('a[data-heatmap-target=".tit"]').length===1 && $(node).find('.sds-comps-profile-info-subtext').length>0).first();
+    const dateText=card.find('.sds-comps-profile-info-subtext').text();
+    // Week/month labels have no exact day: retain the card and narrow the search.
+    const dateStr=parseNaverDateText(dateText) || (exactSearchDay && /\d+\s*(주|개월)\s*전/.test(dateText) ? exactSearchDay : '');
+    const summary=clean(card.find('a[data-heatmap-target=".body"]').text());
+    const publisher=cleanPublisherName(clean(card.find('.sds-comps-profile-info-title-text').first().text()));
+    results.push({url,title,summary,dateStr,publisher,coarseDate:!dateStr && /\d+\s*(주|개월)\s*전/.test(dateText)});
   });
-
   return results;
+}
+
+export function naverNextPage(payload: unknown): string | null {
+  const valid=(value:unknown):string|null => {
+    if(typeof value!=="string") return null;
+    try {const u=new URL(value);return u.protocol==="https:" && u.hostname==="s.search.naver.com" && /^\/p\/newssearch\/\d+\/api\/tab\/more$/.test(u.pathname) ? u.toString() : null;} catch{return null;}
+  };
+  if (payload && typeof payload==="object") return valid((payload as {url?:unknown}).url);
+  if(typeof payload!=="string") return null;
+  for(const match of payload.matchAll(/"url"\s*:\s*("(?:\\.|[^"\\])*")/g)) {
+    try {const url=valid(JSON.parse(match[1]));if(url)return url;}catch{}
+  }
+  return null;
+}
+
+export function naverPageHtml(payload:unknown):string {
+  if(typeof payload==="string") return payload;
+  const collection=(payload as {collection?:Array<{html?:string}>})?.collection;
+  return Array.isArray(collection) ? collection.map(c=>c.html||"").join("\n") : "";
 }
 
 // Current news pages use an observed XLoad URL for their next results. Changing
@@ -581,6 +642,11 @@ export async function crawlNaverWebSearch(
   startDate: string,
   endDate: string,
 ): Promise<ArticleData[]> {
+  validateDateRange(startDate,endDate);
+  const health=(await readProviderHealth()).naver_web;
+  if(health?.blockedUntil && Date.parse(health.blockedUntil)>Date.now()){warnSource('네이버 웹',health.reason+' — 앱 요청 휴식 중');return [];}
+  const months=splitIntoMonths(startDate,endDate);
+  if(months.length>1){const result:ArticleData[]=[];for(const month of months)result.push(...await crawlNaverWebSearch(month.start,month.end));return result;}
   const allResults: ArticleData[] = [];
   const ds = startDate.replace(/-/g, ".");
   const de = endDate.replace(/-/g, ".");
@@ -609,13 +675,29 @@ export async function crawlNaverWebSearch(
 
         const page = readNaverSearchPage(resp.data);
         continuationUrl = validateNaverContinuationUrl(page.nextUrl, query, ds, de);
-        const articles = extractNaverWebArticles(page.html);
+        const html = page.html;
+        const pageState=classifyProviderResponse(resp.status||200,html);
+        if(['challenge','automated'].includes(pageState.kind))throw Object.assign(new Error(pageState.reason),{response:{status:resp.status||200,data:html}});
+        const articles = extractNaverWebArticles(html, startDate===endDate ? startDate : undefined);
+        if(articles.some(a=>a.coarseDate) && startDate<endDate){
+          // At most one month (31 days), sequential and paced. Never turn "3 weeks ago" into a guessed date.
+          const daily:ArticleData[]=[];
+          for(let day=startDate;day<=endDate;day=shiftDate(day,1)){
+            await new Promise(resolve=>setTimeout(resolve,3000));
+            daily.push(...await crawlNaverWebSearch(day,day));
+            const health=(await readProviderHealth()).naver_web;
+            if(health?.blockedUntil && Date.parse(health.blockedUntil)>Date.now()){warnSource("네이버 웹","접근 제한으로 남은 일별 확인 중단: 추후 재점검 필요");break;}
+          }
+          return [...new Map([...allResults,...daily].map(a=>[a.url,a])).values()];
+        }
+        if(articles.some(a=>!a.dateStr))warnSource('네이버 웹','단일 날짜 검색에서도 발행일 확인 불가: 해당 기사 제외');
+        if(start===1)await recordProviderHealth('naver_web',{status:articles.length || /검색결과가 없습니다|검색 결과가 없습니다/.test(html)?'ok':'error',reason:articles.length?'기사 요소 추출 확인':/검색결과가 없습니다|검색 결과가 없습니다/.test(html)?'해당 기간 검색 결과 없음':'기사 요소 없음 — 검색 결과 또는 페이지 구조 확인 필요',httpStatus:200,checkedAt:new Date().toISOString()});
 
         if (articles.length === 0) {
           if (start === 1 && !/검색결과가 없습니다|검색 결과가 없습니다/.test(page.html)) warnSource("네이버 웹", "기사 요소를 찾지 못했습니다. 차단 또는 구조 변경을 확인하세요.");
           if (page.isContinuation && !continuationUrl) break;
           emptyPages++;
-          if (emptyPages >= 2) break;
+          if (!continuationUrl || emptyPages >= 2) break;
           continue;
         }
         emptyPages = 0;
@@ -625,20 +707,19 @@ export async function crawlNaverWebSearch(
 
         for (const article of articles) {
           if (seenUrls.has(article.url)) continue;
-          if (!isRelevant(article.title, article.summary)) continue;
           const pubDate = new Date(`${article.dateStr}T12:00:00+09:00`);
           if (isNaN(pubDate.getTime())) continue;
           const kstStart_ = kstStart(startDate);
           const kstEnd_   = kstEnd(endDate);
           if (pubDate < kstStart_ || pubDate > kstEnd_) continue;
-          seenUrls.add(article.url);
+          if (isRelevant(article.title, article.summary)) seenUrls.add(article.url);
 
           allResults.push({
             title:       article.title,
             content:     article.summary,
             url:         article.url,
             publishedAt: pubDate,
-            mediaName:   `네이버(${resolveMediaNameStrict(article.url) || "기타"})`,
+            mediaName:   `네이버(${resolveMediaNameStrict(article.url) || article.publisher || "기타"})`,
             isNegative:  false,
             isSelfPR:    false,
             source:      "naver_web",
@@ -650,10 +731,16 @@ export async function crawlNaverWebSearch(
         }
         if (page.isContinuation && !continuationUrl) break;
 
-        await new Promise((r) => setTimeout(r, 800));
+        await new Promise((r) => setTimeout(r, 3000));
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        warnSource("네이버 웹", `start ${start}: ${msg}`);
+        const response=(err as {response?:{status:number;data?:unknown}}).response;
+        const classification=response ? classifyProviderResponse(response.status,String(response.data||'')) : {kind:'network',reason:'네트워크 연결 또는 응답 시간 초과'};
+        const challenge=['challenge','automated'].includes(classification.kind);
+        const limited=challenge||[403,429].includes(response?.status||0);
+        await recordProviderHealth('naver_web',{status:limited?'limited':'error',reason:classification.reason,httpStatus:response?.status,responseEvidence:response?providerResponseEvidence(String(response.data||'')):undefined,checkedAt:new Date().toISOString(),...(limited?{blockedUntil:new Date(Date.now()+(challenge?6*3600_000:15*60_000)).toISOString()}:{})});
+        warnSource("네이버 웹", `start ${start}: ${classification.reason} — ${msg}`);
+        if (limited) return uniqueCandidates(allResults);
         break;
       }
     }
@@ -663,5 +750,5 @@ export async function crawlNaverWebSearch(
   }
 
   logger.info({ total: allResults.length }, "Naver web search crawl complete");
-  return allResults;
+  return uniqueCandidates(allResults);
 }

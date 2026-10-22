@@ -26,6 +26,7 @@ router.get("/settings", (_req, res): void => {
       trial: process.env.DEPLOYMENT_MODE === "free-trial",
       databaseExpiresAt: process.env.DATABASE_EXPIRES_AT || null,
       schedulerEnabled: process.env.RUN_SCHEDULER === "true",
+      revision: process.env.RENDER_GIT_COMMIT || null,
     },
     crawlIntervalMinutes: Number(process.env.CRAWL_INTERVAL_MINUTES || 30),
     kakaoApiKey: {
