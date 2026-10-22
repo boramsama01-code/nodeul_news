@@ -1,4 +1,4 @@
--- Fresh installations only. Never drops or replaces existing data.
+-- Additive, repeatable initialization. Never drops or replaces existing data.
 CREATE TABLE IF NOT EXISTS articles (
   id serial PRIMARY KEY,
   title text NOT NULL,
@@ -26,5 +26,10 @@ CREATE TABLE IF NOT EXISTS crawl_jobs (
   current_source text NOT NULL DEFAULT '',
   error text NOT NULL DEFAULT '',
   created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS app_state (
+  key text PRIMARY KEY,
+  value jsonb NOT NULL,
   updated_at timestamptz NOT NULL DEFAULT now()
 );

@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   useStartCrawl,
   useStartBulkCrawl,
@@ -33,15 +33,27 @@ function getCrawlStartErrorMessage(error: unknown): string {
 
 export default function Crawl() {
   const { toast } = useToast();
+  const queryClient = useQueryClient();
+  const { data: configuration } = useQuery<{
+    crawlIntervalMinutes: number;
+    deployment?: { cloud: boolean; trial: boolean; schedulerEnabled: boolean };
+  }>({
+    queryKey: ["settings"],
+    queryFn: async () => {
+      const response = await fetch("/api/settings");
+      if (!response.ok) throw new Error("수집 설정 조회 실패");
+      return response.json();
+    },
+  });
+  const manualCloud = configuration?.deployment?.cloud === true && !configuration.deployment.schedulerEnabled;
 
-  const { data: recentJobs, isError: historyError } = useQuery<RecentJob[]>({
+  const { data: recentJobs, isError: historyError, refetch: refreshHistory } = useQuery<RecentJob[]>({
     queryKey: ["crawl-recent"],
     queryFn: async () => {
       const response = await fetch("/api/crawl/recent");
       if (!response.ok) throw new Error("수집 이력 조회 실패");
       return response.json();
     },
-    refetchInterval: 5000,
   });
 
   const today = new Date();
@@ -88,6 +100,7 @@ export default function Crawl() {
       });
       setShowCompletionModal(true);
       setActiveJobId(null);
+      void queryClient.invalidateQueries({ queryKey: ["crawl-recent"] });
     } else if (jobStatus?.status === "error") {
       toast({
         title: "수집 실패",
@@ -95,8 +108,9 @@ export default function Crawl() {
         variant: "destructive",
       });
       setActiveJobId(null);
+      void queryClient.invalidateQueries({ queryKey: ["crawl-recent"] });
     }
-  }, [jobStatus?.status, toast]);
+  }, [jobStatus?.status, toast, queryClient]);
 
   const handleStartCrawl = () => {
     if (!startDate || !endDate) return;
@@ -107,6 +121,7 @@ export default function Crawl() {
       {
         onSuccess: (data) => {
           setActiveJobId(data.jobId);
+          void queryClient.invalidateQueries({ queryKey: ["crawl-recent"] });
           toast({ title: "수집 시작", description: "등록된 검색·RSS 수집처를 확인합니다. 실패 내역은 수집 이력에 표시됩니다." });
         },
         onError: (error) => {
@@ -125,6 +140,7 @@ export default function Crawl() {
       {
         onSuccess: (data) => {
           setActiveJobId(data.jobId);
+          void queryClient.invalidateQueries({ queryKey: ["crawl-recent"] });
           toast({ title: "대량 수집 시작", description: "월별로 나눠 순차 수집합니다. 시간이 걸릴 수 있습니다." });
         },
         onError: (error) => {
@@ -156,17 +172,23 @@ export default function Crawl() {
       <div className="flex items-start gap-2.5 p-3.5 rounded-lg bg-accent/60 border border-accent text-accent-foreground text-sm">
         <Clock className="w-4 h-4 shrink-0 mt-0.5" />
         <div>
-          <span className="font-medium">독립 자동 수집</span>
-          <span className="text-muted-foreground ml-1.5">— 수집 프로그램이 실행 중이면 기본 30분 간격으로 최근 3일과 오늘을 다시 확인합니다. 중복 기사는 제외하며, 중단 후 재시작 시 마지막 완료 이후 기간도 확인합니다. 아래 이력에서 실제 실행 여부를 확인하세요.</span>
+          <span className="font-medium">{manualCloud ? "버튼을 눌러 수집" : "수집 방식"}</span>
+          <span className="text-muted-foreground ml-1.5">— {manualCloud
+            ? "날짜를 선택하고 아래 수집 버튼을 누를 때만 실행합니다. 접속하거나 서버가 깨어날 때 자동으로 수집하지 않습니다. 긴 수집은 이 화면을 열어두고 완료를 확인해 주세요."
+            : configuration
+              ? `자동 수집 프로그램이 실행 중일 때는 ${configuration.crawlIntervalMinutes}분 간격으로 최근 기간을 확인합니다. 아래 이력에서 실제 실행 여부를 확인하세요.`
+              : "설정 화면에서 자동 수집 여부를 확인할 수 있습니다. 아래 버튼으로 필요한 기간을 직접 수집할 수 있습니다."}</span>
         </div>
       </div>
 
 
       <Card>
-        <CardHeader><CardTitle>최근 수집 이력</CardTitle><CardDescription>신규 0건과 수집처 오류를 구분해 확인할 수 있습니다.</CardDescription></CardHeader>
+        <CardHeader><CardTitle>최근 수집 이력</CardTitle><CardDescription>신규 0건과 수집처 오류를 구분해 확인할 수 있습니다.</CardDescription>
+          <Button variant="outline" size="sm" className="self-start" onClick={() => void refreshHistory()}>이력 새로고침</Button>
+        </CardHeader>
         <CardContent className="space-y-3">
           {historyError && <p role="alert">수집 이력을 불러오지 못했습니다. 서버 연결을 확인하세요.</p>}
-          {recentJobs?.length === 0 && <p className="text-sm text-muted-foreground">아직 실행 이력이 없습니다. 자동 수집 프로그램이 켜져 있는지 확인하세요.</p>}
+          {recentJobs?.length === 0 && <p className="text-sm text-muted-foreground">아직 실행 이력이 없습니다. 아래에서 기간을 선택해 수집을 시작하세요.</p>}
           {recentJobs?.map(job => <details key={job.id} className="rounded-md border p-3 text-sm">
             <summary className="cursor-pointer">{new Date(job.createdAt).toLocaleString("ko-KR", { timeZone: "Asia/Seoul" })} · {job.status === "done" ? "완료 (상세 확인)" : job.status === "error" ? "오류" : "수집 중"} · 신규 {job.collected}건 / 중복 {job.duplicates}건</summary>
             <p className="mt-2 whitespace-pre-wrap break-words text-muted-foreground">{job.error || "실행 중이거나 상세 진단이 없는 이전 작업입니다."}</p>
