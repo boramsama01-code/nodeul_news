@@ -95,7 +95,7 @@ export default function Crawl() {
         total: jobStatus.total,
       });
       toast({
-        title: "수집 완료",
+        title: "수집 작업 종료",
         description: `신규 수집 ${jobStatus.collected}건 · 중복 제외 ${jobStatus.duplicates}건`,
       });
       setShowCompletionModal(true);
@@ -417,9 +417,9 @@ export default function Crawl() {
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
               <CheckCircle2 className="w-5 h-5 text-emerald-500" />
-              수집 완료
+              수집 작업 종료
             </DialogTitle>
-            <DialogDescription>지정 기간의 뉴스 수집이 완료되었습니다.</DialogDescription>
+            <DialogDescription>조회한 기사의 처리가 끝났습니다. 최근 수집 기록에서 실패한 출처와 검색 제한을 확인해 주세요.</DialogDescription>
           </DialogHeader>
           <div className="py-3 space-y-2">
             <div className="flex justify-between items-center p-3 bg-muted rounded-lg">

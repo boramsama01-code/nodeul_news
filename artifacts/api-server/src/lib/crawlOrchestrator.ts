@@ -14,6 +14,7 @@ import {
 import { analyzeArticleSentiment } from "./aiAnalysis";
 import { crawlAllSources, crawlNaverNews, crawlDaumNews, crawlNaverWebSearch } from "./crawlerSources";
 import { loadExistingArticles, refreshExcludedArticle } from "./existingArticles";
+import { withGoogleRssPolicy } from "./googleRssPolicy";
 
 export interface CrawlJobDependencies {
   db?: typeof db;
@@ -31,7 +32,8 @@ export async function runCrawlJob(
   dependencies: CrawlJobDependencies = {},
 ): Promise<void> {
   validateDateRange(startDate, endDate);
-  const run = () => crawlWarnings.run([], () => executeCrawlJob(jobId, startDate, endDate, dependencies));
+  const run = () => withGoogleRssPolicy(() =>
+    crawlWarnings.run([], () => executeCrawlJob(jobId, startDate, endDate, dependencies)));
   return dependencies.db ? run() : withCrawlLock(run, jobId);
 }
 

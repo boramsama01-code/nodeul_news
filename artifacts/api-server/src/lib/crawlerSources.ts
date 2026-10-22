@@ -7,6 +7,7 @@ import { NEWS_SOURCES, GOOGLE_NEWS_SOURCES, NewsSource } from "./rssFeedList";
 import { googleFeedUrl, kstDate, mapConcurrent, parseRssPublishedAt, warnSource, validateDateRange } from "./crawlRuntime";
 import { COLLECTION_KEYWORDS, GOOGLE_NEWS_QUERY } from "./newsRelevance";
 import { fetchRssFeed } from "./rssFeedCache";
+import { requestGoogleRss, GoogleRssCircuitOpenError } from "./googleRssPolicy";
 
 const TIMEOUT_MS = 30000;
 
@@ -49,7 +50,9 @@ export async function crawlSource(
 
   try {
     const url = source.method === "google_news_rss" ? googleFeedUrl(source.url, startDate, endDate) : source.url;
-    const feed = await fetchRssFeed(source.method, url, () => withRetry(() => rssParser.parseURL(url), 1));
+    const loadFeed = () => withRetry(() => rssParser.parseURL(url), 1);
+    const feed = await fetchRssFeed(source.method, url, () => source.method === "google_news_rss"
+      ? requestGoogleRss(startDate, endDate, loadFeed) : loadFeed());
 
     for (const item of feed.items || []) {
       try {
@@ -105,6 +108,7 @@ export async function crawlSource(
       }
     }
   } catch (err) {
+    if (err instanceof GoogleRssCircuitOpenError) return [];
     const msg = err instanceof Error ? err.message : String(err);
     warnSource(source.name, msg);
     if (source.method === "rss_direct") {
@@ -517,6 +521,44 @@ function extractNaverWebArticles(
   return results;
 }
 
+// Current news pages use an observed XLoad URL for their next results. Changing
+// `start` on the outer search page alone returns the first ten results again.
+function readNaverSearchPage(data: unknown): { html: string; nextUrl?: string; isContinuation: boolean } {
+  let payload = data;
+  if (typeof payload === "string" && payload.trimStart().startsWith("{")) payload = JSON.parse(payload);
+  if (payload && typeof payload === "object") {
+    const page = payload as {collection?: Array<{html?: unknown}>; url?: unknown};
+    if (!Array.isArray(page.collection)) throw new Error("네이버 추가 검색 응답의 기사 목록을 읽을 수 없습니다.");
+    return {
+      html: page.collection.map(item => typeof item.html === "string" ? item.html : "").join(""),
+      nextUrl: typeof page.url === "string" && page.url ? page.url : undefined,
+      isContinuation: true,
+    };
+  }
+  const html = String(payload ?? "");
+  for (const match of html.matchAll(/"url"\s*:\s*("(?:\\.|[^"\\])*")/g)) {
+    try {
+      const url = JSON.parse(match[1]) as unknown;
+      if (typeof url === "string" && url.startsWith("https://s.search.naver.com/p/newssearch/") && url.includes("/api/tab/more?")) {
+        return {html, nextUrl: url, isContinuation: false};
+      }
+    } catch { /* Other inline metadata is not a pagination URL. */ }
+  }
+  return {html, isContinuation: false};
+}
+
+function validateNaverContinuationUrl(value: string | undefined, query: string, ds: string, de: string): string | undefined {
+  if (!value) return undefined;
+  const url = new URL(value);
+  if (url.protocol !== "https:" || url.hostname !== "s.search.naver.com" || url.port || url.username || url.password ||
+      !/^\/p\/newssearch\/\d+\/api\/tab\/more$/.test(url.pathname) ||
+      url.searchParams.get("query") !== query || url.searchParams.get("ds") !== ds || url.searchParams.get("de") !== de ||
+      url.searchParams.get("pd") !== "3") {
+    throw new Error("네이버 다음 페이지 주소가 요청한 검색어·기간과 일치하지 않아 중단했습니다.");
+  }
+  return url.toString();
+}
+
 export async function crawlNaverWebSearch(
   startDate: string,
   endDate: string,
@@ -529,19 +571,31 @@ export async function crawlNaverWebSearch(
     let emptyPages = 0;
     const seenUrls = new Set<string>();
     const seenPages = new Set<string>();
+    const requestedContinuationUrls = new Set<string>();
+    let continuationUrl: string | undefined;
 
     for (let start = 1; start <= 1000; start += 10) {
       try {
-        const resp = await withRetry<AxiosResponse<string>>(() => axios.get<string>("https://search.naver.com/search.naver", {
-          params: { where: "news", query, sort: 1, pd: 3, ds, de, start },
+        if (continuationUrl) {
+          if (requestedContinuationUrls.has(continuationUrl)) { warnSource("네이버 웹", "동일 다음 페이지 주소 반복으로 탐색 중단"); break; }
+          requestedContinuationUrls.add(continuationUrl);
+        }
+        const requestUrl = continuationUrl ?? "https://search.naver.com/search.naver";
+        const requestParams = continuationUrl ? undefined : { where: "news", query, sort: 1, pd: 3, ds, de, start };
+        const resp = await withRetry<AxiosResponse<string>>(() => axios.get<string>(requestUrl, {
+          params: requestParams,
           headers: NAVER_WEB_HEADERS,
           timeout: 30000,
+          responseType: "text",
         }));
 
-        const articles = extractNaverWebArticles(resp.data as string);
+        const page = readNaverSearchPage(resp.data);
+        continuationUrl = validateNaverContinuationUrl(page.nextUrl, query, ds, de);
+        const articles = extractNaverWebArticles(page.html);
 
         if (articles.length === 0) {
-          if (start === 1 && !/검색결과가 없습니다|검색 결과가 없습니다/.test(String(resp.data))) warnSource("네이버 웹", "기사 요소를 찾지 못했습니다. 차단 또는 구조 변경을 확인하세요.");
+          if (start === 1 && !/검색결과가 없습니다|검색 결과가 없습니다/.test(page.html)) warnSource("네이버 웹", "기사 요소를 찾지 못했습니다. 차단 또는 구조 변경을 확인하세요.");
+          if (page.isContinuation && !continuationUrl) break;
           emptyPages++;
           if (emptyPages >= 2) break;
           continue;
@@ -576,6 +630,7 @@ export async function crawlNaverWebSearch(
         if (start === 991 && articles.length >= 10) {
           warnSource("네이버 웹", `${query} ${startDate}~${endDate}: 100페이지 탐색 한도 도달 (일부 기사 누락 가능)`);
         }
+        if (page.isContinuation && !continuationUrl) break;
 
         await new Promise((r) => setTimeout(r, 800));
       } catch (err) {

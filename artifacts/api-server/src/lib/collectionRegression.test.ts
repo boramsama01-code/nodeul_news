@@ -164,18 +164,82 @@ test("Daum paginates past mixed, unknown, and malformed dates but stops on an en
   }
 });
 
+test("Naver follows observed JSON continuation pages for all four keywords and exact day bounds", async t => {
+  const previousTimeout = globalThis.setTimeout;
+  t.mock.method(globalThis, "setTimeout", (callback: () => void) => previousTimeout(callback, 0));
+  const calls: Array<{query: string; start: number}> = [];
+  const nextUrl = (query: string, start: number) => {
+    const url = new URL("https://s.search.naver.com/p/newssearch/4/api/tab/more");
+    for (const [key, value] of Object.entries({query, ds:"2026.01.10", de:"2026.01.10", pd:"3", start:String(start), ssc:"tab.news.all", nso:"so:dd,p:from20260110to20260110,a:all"})) url.searchParams.set(key, value);
+    return url.toString();
+  };
+  t.mock.method(axios, "get", async (url: string, config: {params?: {query: string; ds: string; de: string; start: number}}) => {
+    const request = new URL(url);
+    const query = config.params?.query ?? request.searchParams.get("query")!;
+    const start = config.params?.start ?? Number(request.searchParams.get("start"));
+    assert.equal(config.params?.ds ?? request.searchParams.get("ds"), "2026.01.10");
+    assert.equal(config.params?.de ?? request.searchParams.get("de"), "2026.01.10");
+    if (start > 1) {
+      assert.equal(config.params, undefined);
+      assert.equal(url, nextUrl(query, start));
+    }
+    calls.push({query, start});
+    const articleUrl = `https://example.com/${COLLECTION_KEYWORDS.indexOf(query as typeof COLLECTION_KEYWORDS[number])}/${start}`;
+    const html = `<div>2026.01.10.</div><a data-heatmap-target=".tit" href="${articleUrl}">${query} 행사 ${start}</a>`;
+    if (start === 1) {
+      const encoded = JSON.stringify(nextUrl(query, 11)).replace(/\//g, "\\/").replace(/&/g, "\\u0026");
+      return {data: html + `<script>var xload = new XLoad({"url":${encoded},"insertTarget":"._infinite_list"});</script>`};
+    }
+    return {data: JSON.stringify({collection:[{html, script:'<a data-heatmap-target=".tit" href="https://example.com/metadata">노들섬 메타데이터</a>'}], url:start === 11 ? nextUrl(query, 21) : ""})};
+  });
+  const articles = await crawlNaverWebSearch("2026-01-10", "2026-01-10");
+  assert.equal(articles.length, COLLECTION_KEYWORDS.length * 3);
+  assert.deepEqual(calls, COLLECTION_KEYWORDS.flatMap(query => [1,11,21].map(start => ({query,start}))));
+  assert.ok(articles.every(article => article.publishedAt.toISOString() === "2026-01-10T03:00:00.000Z"));
+  assert.ok(articles.every(article => article.url !== "https://example.com/metadata"));
+});
+
+test("Naver stops repeated continuation URLs or result pages and rejects changed hosts or dates", async t => {
+  const previousTimeout = globalThis.setTimeout;
+  t.mock.method(globalThis, "setTimeout", (callback: () => void) => previousTimeout(callback, 0));
+  const next = "https://s.search.naver.com/p/newssearch/4/api/tab/more?query=" + encodeURIComponent(COLLECTION_KEYWORDS[0]) + "&ds=2026.01.10&de=2026.01.10&pd=3&start=11";
+  const first = '<div>2026.01.10.</div><a data-heatmap-target=".tit" href="https://example.com/first">노들섬 첫 기사</a>';
+  const second = '<div>2026.01.10.</div><a data-heatmap-target=".tit" href="https://example.com/second">노들섬 두 번째 기사</a>';
+  for (const mode of ["url", "response", "host", "date"] as const) {
+    let requests = 0;
+    const mockGet = t.mock.method(axios, "get", async (url: string, config: {params?: {query: string}}) => {
+      if (config.params && config.params.query !== COLLECTION_KEYWORDS[0]) return {data:"검색결과가 없습니다"};
+      requests++;
+      if (config.params) {
+        const candidate = mode === "host" ? next.replace("s.search.naver.com", "example.com") : mode === "date" ? next.replace("de=2026.01.10", "de=2026.02.10") : next;
+        // JSON responses also occur on the continuation route; validate before following them.
+        return {data:JSON.stringify({collection:[{html:first}],url:candidate})};
+      }
+      assert.equal(url, next);
+      return {data:JSON.stringify({collection:[{html:mode === "response" ? first : second}],url:mode === "response" ? next.replace("start=11", "start=21") : next})};
+    });
+    const warnings: string[] = [];
+    await crawlWarnings.run(warnings, () => crawlNaverWebSearch("2026-01-10", "2026-01-10"));
+    assert.equal(requests, mode === "host" || mode === "date" ? 1 : 2);
+    assert.ok(warnings.some(warning => mode === "url" ? warning.includes("동일 다음 페이지 주소") : mode === "response" ? warning.includes("동일 페이지 반복") : warning.includes("검색어·기간과 일치하지 않아")));
+    mockGet.mock.restore();
+  }
+});
+
 test("full final portal pages record pagination coverage limits", async t => {
   const previousTimeout = globalThis.setTimeout;
   t.mock.method(globalThis, "setTimeout", (callback: () => void) => previousTimeout(callback, 0));
   const pageCalls = {daum: 0, naver: 0};
-  t.mock.method(axios, "get", async (url: string, config: {params: {q?: string; query?: string; page?: number; start?: number}}) => {
-    if ((config.params.q ?? config.params.query) !== COLLECTION_KEYWORDS[0]) return {data: "검색결과가 없습니다"};
+  t.mock.method(axios, "get", async (url: string, config: {params?: {q?: string; query?: string; page?: number; start?: number}}) => {
+    if ((config.params?.q ?? config.params?.query ?? new URL(url).searchParams.get("query")) !== COLLECTION_KEYWORDS[0]) return {data: "검색결과가 없습니다"};
     const daum = url.includes("daum.net");
     pageCalls[daum ? "daum" : "naver"]++;
-    const page = daum ? config.params.page! : config.params.start!;
-    return {data: Array.from({length: 10}, (_, index) => daum
+    const page = daum ? config.params!.page! : config.params?.start ?? Number(new URL(url).searchParams.get("start"));
+    const html = Array.from({length: 10}, (_, index) => daum
       ? `<li><div><div class="item-title"><a href="https://v.daum.net/v/202601101200${page * 10 + index}">노들섬 행사 ${page}-${index}</a></div></div></li>`
-      : `<div>2026.01.10.</div><a data-heatmap-target=".tit" href="https://example.com/${page}/${index}">노들섬 행사 ${page}-${index}</a>`).join("")};
+      : `<div>2026.01.10.</div><a data-heatmap-target=".tit" href="https://example.com/${page}/${index}">노들섬 행사 ${page}-${index}</a>`).join("");
+    const next = `https://s.search.naver.com/p/newssearch/4/api/tab/more?query=${encodeURIComponent(COLLECTION_KEYWORDS[0])}&ds=2026.01.01&de=2026.01.31&pd=3&start=${page + 10}`;
+    return {data:daum ? html : JSON.stringify({collection:[{html}],url:next})};
   });
   const warnings: string[] = [];
   await crawlWarnings.run(warnings, async () => {
