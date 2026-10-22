@@ -59,7 +59,7 @@ test("cloud credentials survive reload without using local files; failed writes 
   }
 });
 
-test("health is public, app and settings stay private, database failure is not reported healthy", async () => {
+test("public access ignores legacy passwords, preserves origin checks and reports database failure", async () => {
   process.env.APP_PASSWORD = "fixture-password-not-for-production";
   const {pool} = await import("@workspace/db");
   const originalQuery = pool.query;
@@ -86,11 +86,9 @@ test("health is public, app and settings stay private, database failure is not r
     const health = await request(`${url}/api/healthz`);
     assert.equal(health.status, 200);
     assert.deepEqual(await health.json(), {status:"ok"});
-    for (const endpoint of ["/", "/api/articles", "/api/settings", "/api/healthz/private"]) {
-      assert.equal((await request(url + endpoint)).status, 401);
-    }
-    assert.equal((await request(`${url}/api/settings`, {headers:{Authorization:"Basic invalid"}})).status, 401);
-    const settings = await request(`${url}/api/settings`, {headers});
+    assert.equal((await request(`${url}/api/healthz/private`)).status, 404);
+    assert.equal((await request(`${url}/api/settings`, {headers:{Authorization:"Basic invalid"}})).status, 200);
+    const settings = await request(`${url}/api/settings`);
     assert.equal(settings.status, 200);
     assert.ok(!(await settings.text()).includes(process.env.APP_PASSWORD));
     assert.equal((await request(`${url}/api/settings`, {headers:{...headers, Origin:"https://untrusted.example"}})).status, 403);

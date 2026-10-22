@@ -1,10 +1,9 @@
 import { spawnSync } from "node:child_process";
 
-// Never expose a Render deployment while its authentication is unconfigured.
-for (const name of ["DATABASE_URL", "APP_PASSWORD", "CONFIG_ENCRYPTION_KEY"]) {
+// Public access does not require a password; stored API keys remain encrypted.
+for (const name of ["DATABASE_URL", "CONFIG_ENCRYPTION_KEY"]) {
   if (!process.env[name]) throw new Error(`${name} must be configured before starting Render.`);
 }
-if (process.env.APP_PASSWORD.length < 16) throw new Error("APP_PASSWORD must contain at least 16 characters.");
 if (process.env.CONFIG_ENCRYPTION_KEY.length < 32) throw new Error("CONFIG_ENCRYPTION_KEY must contain at least 32 characters.");
 process.env.STATE_BACKEND = "postgres";
 process.env.WEB_DIST ||= "artifacts/web/dist/public";
