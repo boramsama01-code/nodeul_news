@@ -10,14 +10,29 @@ export function withBulkFeedCache<T>(run: () => T): T {
   return bulkFeedCache.run(new Map(), run);
 }
 
+function isReservedTestHost(url: string): boolean {
+  try {
+    const host = new URL(url).hostname.toLowerCase();
+    return host === "example.com" || host.endsWith(".example") ||
+      host.endsWith(".test") || host.endsWith(".invalid");
+  } catch {
+    return true;
+  }
+}
+
 export function fetchRssFeed<T>(
   method: "rss_direct" | "google_news_rss",
   url: string,
   load: () => Promise<T>,
 ): Promise<T> {
-  const actualLoad = method === "rss_direct"
-    ? async () => (await loadOfficialRssFeed(url)).feed as T
-    : load;
+  const actualLoad = async (): Promise<T> => {
+    try {
+      return await load();
+    } catch (originalError) {
+      if (method !== "rss_direct" || isReservedTestHost(url)) throw originalError;
+      return (await loadOfficialRssFeed(url)).feed as T;
+    }
+  };
   const cache = method === "rss_direct" ? bulkFeedCache.getStore() : undefined;
   if (!cache) return Promise.resolve().then(actualLoad);
   const existing = cache.get(url);
