@@ -86,7 +86,7 @@ export default function Articles() {
   };
 
   const { data: yearsData } = useGetStatYears({
-    query: { refetchInterval: 30_000, queryKey: getGetStatYearsQueryKey() },
+    query: { queryKey: getGetStatYearsQueryKey() },
   });
 
   const queryParams = {
@@ -100,7 +100,7 @@ export default function Articles() {
   };
 
   const { data, isLoading, refetch } = useListArticles(queryParams, {
-    query: { refetchInterval: 30_000, queryKey: getListArticlesQueryKey(queryParams) },
+    query: { queryKey: getListArticlesQueryKey(queryParams) },
   });
 
   const updateArticle = useUpdateArticle();

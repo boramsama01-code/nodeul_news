@@ -5,12 +5,12 @@ import axios from "axios";
 import { setNaverKeys } from "../lib/configStore";
 
 const router: IRouter = Router();
-router.post("/settings/naver-key", (req, res): void => {
+router.post("/settings/naver-key", async (req, res): Promise<void> => {
   const { clientId, clientSecret } = req.body ?? {};
   if (typeof clientId !== "string" || typeof clientSecret !== "string" || !clientId.trim() || !clientSecret.trim() || clientId.length > 512 || clientSecret.length > 512) {
     res.status(400).json({ error: "Client ID와 Client Secret을 모두 입력해 주세요." }); return;
   }
-  setNaverKeys(clientId.trim(), clientSecret.trim());
+  await setNaverKeys(clientId.trim(), clientSecret.trim());
   res.json({ ok: true });
 });
 
@@ -21,6 +21,13 @@ router.get("/settings", (_req, res): void => {
   res.json({
     naverApi: { configured: !!(process.env.NAVER_CLIENT_ID && process.env.NAVER_CLIENT_SECRET) },
     ai: { configured: !!process.env.ANTHROPIC_API_KEY },
+    deployment: {
+      cloud: process.env.STATE_BACKEND === "postgres",
+      trial: process.env.DEPLOYMENT_MODE === "free-trial",
+      databaseExpiresAt: process.env.DATABASE_EXPIRES_AT || null,
+      schedulerEnabled: process.env.RUN_SCHEDULER === "true",
+      revision: process.env.RENDER_GIT_COMMIT || null,
+    },
     crawlIntervalMinutes: Number(process.env.CRAWL_INTERVAL_MINUTES || 30),
     kakaoApiKey: {
       configured: kakaoSet,
@@ -56,15 +63,15 @@ router.post("/settings/kakao-key", async (req, res): Promise<void> => {
     logger.warn({ status }, "Kakao key validation request failed (non-auth), saving anyway");
   }
 
-  setKakaoApiKey(trimmedKey);
+  await setKakaoApiKey(trimmedKey);
   logger.info("Kakao REST API key updated");
 
   res.json({ ok: true, masked: `${trimmedKey.slice(0, 4)}${"*".repeat(Math.max(0, trimmedKey.length - 4))}` });
 });
 
 // DELETE /api/settings/kakao-key — remove saved key
-router.delete("/settings/kakao-key", (_req, res): void => {
-  deleteKakaoApiKey();
+router.delete("/settings/kakao-key", async (_req, res): Promise<void> => {
+  await deleteKakaoApiKey();
   logger.info("Kakao REST API key removed");
   res.json({ ok: true });
 });

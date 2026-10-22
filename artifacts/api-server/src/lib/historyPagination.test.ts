@@ -12,17 +12,17 @@ test('Naver dates and publishers stay inside their own article card',()=>{
  assert.deepEqual(rows.map(a=>[a.title,a.dateStr,a.publisher]),[['첫 기사','2026-01-30','검증신문'],['다음 기사','2026-01-02','다른신문']]);
 });
 test('Naver follows the advertised cursor and parses its collection HTML',async()=>{
- const next='https://s.search.naver.com/p/newssearch/4/api/tab/more?start=11';
+ const next='https://s.search.naver.com/p/newssearch/4/api/tab/more?start=11&query='+encodeURIComponent('노들섬')+'&ds=2026.01.01&de=2026.01.31&pd=3';
  assert.equal(naverNextPage('<script>'+JSON.stringify({url:next})+'</script>'),next);
  assert.equal(naverNextPage({url:'https://untrusted.example/more'}),null);
  assert.equal(naverPageHtml({collection:[{html:'one'},{html:'two'}]}),'one\ntwo');
  const original=axios.get;const calls:string[]=[];
- axios.get=(async(url:string)=>{calls.push(url);return {data:calls.length===1 ? card('노들섬 첫 기사','2026.01.30.','https://paper.example/a')+'<script>'+JSON.stringify({url:next})+'</script>' : {collection:[{html:card('노들섬 다음 기사','2026.01.02.','https://paper.example/b')}],url:null}};}) as typeof axios.get;
+ axios.get=(async(url:string,config:{params?:{query:string}})=>{if(config.params && config.params.query!=='노들섬')return {data:'검색결과가 없습니다'};calls.push(url);return {data:calls.length===1 ? card('노들섬 첫 기사','2026.01.30.','https://paper.example/a')+'<script>'+JSON.stringify({url:next})+'</script>' : {collection:[{html:card('노들섬 다음 기사','2026.01.02.','https://paper.example/b')}],url:null}};}) as typeof axios.get;
  try {assert.equal((await crawlNaverWebSearch('2026-01-01','2026-01-31')).length,2);assert.deepEqual(calls,['https://search.naver.com/search.naver',next]);} finally {axios.get=original;}
 });
 test('Daum uses p pagination and stops at the advertised last page',async()=>{
  const original=axios.get;const pages:number[]=[];
- axios.get=(async(_url:string,{params}:{params:{p:number}})=>{pages.push(params.p);return {data:`<li><div><div class="item-title"><a href="https://v.daum.net/v/2026010${params.p}120000000">노들섬 기사 ${params.p}</a></div></div></li><script>pageNavigation: {totalPage:2}</script>`};}) as typeof axios.get;
+ axios.get=(async(_url:string,{params}:{params:{p:number;q:string}})=>{if(params.q!=='노들섬')return {data:'검색결과가 없습니다'};pages.push(params.p);return {data:`<li><div><div class="item-title"><a href="https://v.daum.net/v/2026010${params.p}120000000">노들섬 기사 ${params.p}</a></div></div></li><script>pageNavigation: {totalPage:2}</script>`};}) as typeof axios.get;
  try {assert.equal((await crawlDaumNews('2026-01-01','2026-01-31')).length,2);assert.deepEqual(pages,[1,2]);}finally{axios.get=original;}
 });
 test('Daum CAPTCHA stops subsequent months and repeated runs',async()=>{
@@ -32,7 +32,7 @@ test('Daum CAPTCHA stops subsequent months and repeated runs',async()=>{
 });
 test('Daum explicit zero pages keeps first-page articles without requesting a repeated page',async()=>{
  const original=axios.get;let calls=0;
- axios.get=(async()=>{calls++;return {status:200,data:'<li><div class="item-title"><a href="https://v.daum.net/v/20261001120000000">노들섬 기사</a></div></li><script>pageNavigation: { totalPage: 0, currentPage: 1 }</script>'};}) as typeof axios.get;
+ axios.get=(async(_url:string,{params}:{params:{q:string}})=>{if(params.q!=='노들섬')return {data:'검색결과가 없습니다'};calls++;return {status:200,data:'<li><div class="item-title"><a href="https://v.daum.net/v/20261001120000000">노들섬 기사</a></div></li><script>pageNavigation: { totalPage: 0, currentPage: 1 }</script>'};}) as typeof axios.get;
  try {assert.equal((await crawlDaumNews('2026-10-01','2026-10-01')).length,1);assert.equal(calls,1);}finally{axios.get=original;}
 });
 
@@ -53,7 +53,7 @@ test('week labels remain unresolved until an exact single-day search',()=>{
 });
 test('multi-day search with week labels narrows to each requested day',async()=>{
  const original=axios.get;const ranges:string[]=[];
- axios.get=(async(_url:string,{params}:{params:{ds:string;de:string}})=>{ranges.push(params.ds+'~'+params.de);return {data:card('노들섬 공연','3주 전','https://paper.example/'+params.ds)}}) as typeof axios.get;
+ axios.get=(async(_url:string,{params}:{params:{ds:string;de:string;query:string;start:number}})=>{if(params.query!=='노들섬' || params.start>1)return {data:'검색결과가 없습니다'};ranges.push(params.ds+'~'+params.de);return {data:card('노들섬 공연','3주 전','https://paper.example/'+params.ds)}}) as typeof axios.get;
  try {const rows=await crawlNaverWebSearch('2026-08-30','2026-08-31');assert.deepEqual(rows.map(a=>a.publishedAt.toISOString().slice(0,10)),['2026-08-30','2026-08-31']);assert.deepEqual(ranges,['2026.08.30~2026.08.31','2026.08.30~2026.08.30','2026.08.31~2026.08.31']);}finally{axios.get=original;}
 });
 

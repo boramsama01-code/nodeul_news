@@ -10,6 +10,7 @@ import { dirname, join } from "node:path";
 import iconv from "iconv-lite";
 import { extractArticleText } from "./articleText";
 import { classifyProviderResponse, readProviderHealth } from "./providerHealth";
+import { readState, writeState, usesDatabaseState } from "./persistentState";
 import { ArticleData, cleanPublisherName, extractPressName, isPortalUrl, resolveMediaNameStrict, resolvePublisherHint } from "./crawlerUtils";
 
 export interface ArticleIdentity {
@@ -233,6 +234,7 @@ export function formatMediaName(source: string, publisher: string | null, curren
 }
 
 export function createPublisherResolver(options: ResolverOptions = {}) {
+  const databaseCache = options.cachePath === undefined && usesDatabaseState();
   const cachePath = options.cachePath === false ? false : options.cachePath || join(process.env.DATA_DIR || ".local", "publisher-cache.json");
   const now = options.now || Date.now;
   const entries = new Map<string, CacheEntry>();
@@ -251,16 +253,46 @@ export function createPublisherResolver(options: ResolverOptions = {}) {
     if (cache.version !== 1 || !cache.entries || !cache.aliases) throw new Error("invalid-cache");
     return cache;
   };
-  if (cachePath) {
+  if (cachePath && !databaseCache) {
     try {
       const disk = loadCache(readFileSync(cachePath, "utf8"));
       for (const [key, value] of Object.entries(disk.entries)) if (value.expiresAt > now()) entries.set(key, value);
       for (const [key, value] of Object.entries(disk.aliases)) if (value.expiresAt > now()) aliases.set(key, value);
     } catch { /* Empty or invalid cache never prevents collection. */ }
   }
-  async function flush(): Promise<void> {
+  let cacheLoaded: Promise<void> | undefined;
+  async function ensureCacheLoaded(): Promise<void> {
+    if (!databaseCache) return;
+    cacheLoaded ??= (async () => {
+      const saved = await readState<CacheFile>("publisher-cache");
+      if (!saved) return;
+      const disk = loadCache(JSON.stringify(saved));
+      for (const [key, value] of Object.entries(disk.entries)) if (value.expiresAt > now()) entries.set(key, value);
+      for (const [key, value] of Object.entries(disk.aliases)) if (value.expiresAt > now()) aliases.set(key, value);
+    })();
+    try { await cacheLoaded; } catch (error) { cacheLoaded = undefined; throw error; }
+  }
+  let flushTask: Promise<void> = Promise.resolve();
+  function flush(): Promise<void> {
+    flushTask = flushTask.catch(() => {}).then(flushOnce);
+    return flushTask;
+  }
+  async function flushOnce(): Promise<void> {
     if (!cachePath || (!dirtyEntries.size && !dirtyAliases.size)) return;
     if (flushTimer) { clearTimeout(flushTimer); flushTimer = undefined; }
+    if (databaseCache) {
+      await ensureCacheLoaded();
+      const changedEntries = new Map(dirtyEntries), changedAliases = new Map(dirtyAliases);
+      const disk: CacheFile = {
+        version: 1,
+        entries: Object.fromEntries([...entries].filter(([,v]) => v.expiresAt > now()).sort((a,b) => b[1].checkedAt-a[1].checkedAt).slice(0,MAX_CACHE_ENTRIES)),
+        aliases: Object.fromEntries([...aliases].filter(([,v]) => v.expiresAt > now()).slice(-1000)),
+      };
+      await writeState("publisher-cache", disk);
+      for (const [key,value] of changedEntries) if (dirtyEntries.get(key) === value) dirtyEntries.delete(key);
+      for (const [key,value] of changedAliases) if (dirtyAliases.get(key) === value) dirtyAliases.delete(key);
+      return;
+    }
     await mkdir(dirname(cachePath), { recursive: true });
     const lockPath = `${cachePath}.lock`;
     let lock;
@@ -329,6 +361,7 @@ export function createPublisherResolver(options: ResolverOptions = {}) {
   // Content checks share DNS/redirect safeguards, pacing, budgets and the disk
   // cache with publisher lookup. They never replace the stored collection URL.
   async function resolveArticleContent(input: string, controls: EnrichmentOptions & { budget?: Budget } = {}): Promise<ArticleIdentity> {
+    await ensureCacheLoaded();
     let url: string;
     try { url = normalizedUrl(input); }
     catch { return {originalUrl: input, publisher: null, evidence: ["blocked:unsafe-url"], status: "blocked"}; }
@@ -428,6 +461,7 @@ export function createPublisherResolver(options: ResolverOptions = {}) {
     return { originalUrl: verifiedUrl, publisher, evidence, status: "unresolved" };
   }
   async function resolveArticleIdentity(input: string, fallbackName?: string, controls: EnrichmentOptions & { budget?: Budget } = {}): Promise<ArticleIdentity> {
+    await ensureCacheLoaded();
     const rawFallback = extractPressName(fallbackName || "");
     const fallback = resolvePublisherHint(rawFallback) || null;
     const decorate = (value: ArticleIdentity): ArticleIdentity => {
@@ -497,3 +531,5 @@ export const resolveArticleIdentity = (url: string, fallbackName?: string, optio
 export const enrichArticles = <T extends ArticleData>(articles: T[], options?: EnrichmentOptions) => shared().enrichArticles(articles, options);
 export const flushPublisherCache = () => shared().flush();
 export const resolveArticleContent = (url: string, options?: EnrichmentOptions & {budget?: Budget}) => shared().resolveArticleContent(url, options);
+
+export { backfillUnknownPublishers, enrichArticlePublisher, extractPublisherFromHtml, formatResolvedMediaName, isUnknownPublisher, resolvePublisherFromUrl } from "./publisherBackfill";

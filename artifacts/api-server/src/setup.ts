@@ -6,8 +6,16 @@ try {
     const exists = await pool.query("SELECT 1 FROM pg_database WHERE datname = 'nodeul_news'");
     if (!exists.rowCount) await pool.query("CREATE DATABASE nodeul_news");
   } else if (process.argv.includes("--schema")) {
-    const exists = await pool.query("SELECT to_regclass('public.articles') AS name");
-    if (!exists.rows[0].name) await pool.query(await readFile("deploy/init.sql", "utf8"));
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query("SELECT pg_advisory_xact_lock(739422)");
+      await client.query(await readFile("deploy/init.sql", "utf8"));
+      await client.query("COMMIT");
+    } catch (err) {
+      await client.query("ROLLBACK");
+      throw err;
+    } finally { client.release(); }
   } else if (process.argv.includes("--import")) {
     const file = process.argv[process.argv.indexOf("--import") + 1];
     if (!file) throw new Error("SQL 백업 파일 경로가 필요합니다.");
@@ -24,15 +32,20 @@ try {
     let inserted = 0;
     try {
       await client.query("BEGIN");
-      for (let offset = 0; offset < rows.length; offset += 100) {
+      await client.query("SELECT pg_advisory_xact_lock(739423)");
+      const once = process.argv.includes("--once");
+      const prior = once ? await client.query("SELECT 1 FROM app_state WHERE key='archive-import' UNION ALL SELECT 1 FROM articles LIMIT 1") : undefined;
+      const importRows = prior?.rowCount ? [] : rows;
+      for (let offset = 0; offset < importRows.length; offset += 100) {
         const values: (string | null)[] = [];
-        const groups = rows.slice(offset, offset + 100).map(row => {
+        const groups = importRows.slice(offset, offset + 100).map(row => {
           if (row.length !== columns.length) throw new Error("백업 행의 열 개수가 다릅니다.");
           return `(${indexes.map(({i}) => {values.push(decode(row[i])); return `$${values.length}`;}).join(",")})`;
         });
         const result = await client.query(`INSERT INTO articles (${indexes.map(({c}) => c).join(",")}) VALUES ${groups.join(",")} ON CONFLICT (url,source) DO NOTHING`, values);
         inserted += result.rowCount || 0;
       }
+      if (once) await client.query("INSERT INTO app_state(key,value) VALUES ('archive-import',$1::jsonb) ON CONFLICT(key) DO NOTHING", [JSON.stringify({inserted, completedAt:new Date().toISOString()})]);
       await client.query("COMMIT");
       console.log(`Imported ${inserted} articles; existing matching articles were preserved.`);
     } catch (err) { await client.query("ROLLBACK"); throw err; }

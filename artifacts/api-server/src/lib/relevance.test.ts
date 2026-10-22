@@ -16,8 +16,8 @@ const candidate = (changes: Partial<ArticleData> = {}): ArticleData => ({
 const transportOptions = {cachePath: false as const, hostDelayMs: 0, lookup: async () => [{address: "8.8.8.8", family: 4}]};
 const articleBody = (subject: string) => `<article><p>${subject}</p><p>${"시민 참여 프로그램의 운영 계획과 이용 방법을 안내했다. ".repeat(12)}</p></article>`;
 
-test("island aliases and contextual project name survive without a literal 노들섬", () => {
-  for (const title of ["노들예술섬 설계 공개", "노들 예술 섬 개장", "글로벌노들 건축 설계", "글로벌 노들 문화공간 조성", "Nodeul Island concert"]) assert.equal(classifyRelevance(title, "").status, "related", title);
+test("approved island aliases survive without a contiguous 노들섬", () => {
+  for (const title of ["노들섬 설계 공개", "노들 섬 개장", "예술섬노들 개장", "글로벌 노들 예술섬 조성", "노들 글로벌 예술섬 사업"]) assert.equal(classifyRelevance(title, "").status, "related", title);
   assert.equal(classifyRelevance("글로벌노들", "서울에서 공연을 개최했다.").status, "pending");
 });
 test("unrelated station/road/centre terms do not override actual island content", () => {
@@ -88,7 +88,7 @@ test("single and bulk jobs persist only confirmed candidates and keep distinct U
     const raw = [candidate(), candidate({source:"daum_web"}), candidate({url: "https://www.seoul.co.kr/news/a?from=daum#story"}), candidate({title:"노들역 승강기 교체",url:"https://paper.example/station"}), candidate({url:"https://paper.example/blocked"})];
     await run("review-test", "2026-04-01", "2026-04-30", {
       db:database as never, crawlNaverNews:async()=>[], crawlNaverWebSearch:async()=>raw, crawlDaumNews:async()=>[],crawlAllSources:async()=>[],analyzeArticleSentiment:async()=>false,
-      createRelevanceReview:()=>createRelevanceReview({directory:false,resolve:async(url)=>({originalUrl:url,publisher:null,status:"partial",evidence:[],articleText:url.includes('blocked')?undefined:url.includes('station')?'노들역 승강기 교체':'노들예술섬에서 공연 개최',textComplete:!url.includes('blocked')})}),
+      createRelevanceReview:()=>createRelevanceReview({directory:false,resolve:async(url)=>({originalUrl:url,publisher:null,status:"partial",evidence:[],articleText:url.includes('blocked')?undefined:url.includes('station')?'노들역 승강기 교체':'예술섬노들에서 공연 개최',textComplete:!url.includes('blocked')})}),
     });
     assert.equal(inserted.length, 3);
     assert.deepEqual(inserted.map(a=>[a.source,a.url]), raw.slice(0,3).map(a=>[a.source,a.url]));

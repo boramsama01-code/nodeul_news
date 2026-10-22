@@ -3,6 +3,7 @@ import {join,dirname} from 'node:path';
 import axios from 'axios';
 import {logger} from './logger';
 import * as cheerio from 'cheerio';
+import {readState, writeState, usesDatabaseState} from './persistentState';
 
 export interface ProviderHealth {
   status:'ok'|'limited'|'error'; reason:string; checkedAt:string;
@@ -34,7 +35,8 @@ let writes:Promise<unknown>=Promise.resolve();
 const memoryHealth=new Map<string,Record<string,ProviderHealth>>();
 export async function readProviderHealth():Promise<Record<string,ProviderHealth>> {
   const file=healthPath();let stored:Record<string,ProviderHealth>={};
-  try{stored=JSON.parse(await readFile(file,'utf8'));}catch{}
+  if(usesDatabaseState()) stored=await readState<Record<string,ProviderHealth>>('provider-health') || {};
+  else try{stored=JSON.parse(await readFile(file,'utf8'));}catch{}
   for(const [key,value] of Object.entries(memoryHealth.get(file)||{})){
     if(!stored[key] || Date.parse(value.checkedAt)>=Date.parse(stored[key].checkedAt))stored[key]=value;
   }
@@ -47,6 +49,7 @@ export function recordProviderHealth(provider:string,value:ProviderHealth):Promi
     const file=healthPath();memoryHealth.set(file,all);
     // Diagnostic storage must not discard collected articles; retain cooldowns in memory.
     try{
+      if(usesDatabaseState()) {await writeState('provider-health',all);return;}
       await mkdir(dirname(file),{recursive:true});
       const temporary=file+'.'+process.pid+'.tmp';await writeFile(temporary,JSON.stringify(all,null,2));
       for(let attempt=0;;attempt++){

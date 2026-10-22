@@ -1,8 +1,5 @@
 import { VERIFIED_PUBLISHERS } from "./verifiedPublishers";
-import { classifyRelevance } from "./relevance";
-export function isRelevant(title: string, content: string): boolean {
-  return classifyRelevance(title, content).status === "related";
-}
+export { isRelevant } from "./newsRelevance";
 
 // Rule-based negative sentiment analysis (used when ANTHROPIC_API_KEY is not set)
 const NEGATIVE_KEYWORDS = [

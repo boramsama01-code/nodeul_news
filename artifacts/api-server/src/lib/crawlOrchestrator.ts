@@ -1,3 +1,5 @@
+import { crawlAllSourcesPaced } from "./pacedSources";
+import { crawlDateChunks, settleSequentially } from "./crawlPacing";
 import { createRelevanceReview } from "./relevanceReview";
 import {crawlOfficialArchives} from "./officialArchives";
 import { loadExistingArticles } from "./existingArticles";
@@ -14,6 +16,7 @@ import {
 import { analyzeArticleSentiment } from "./aiAnalysis";
 import { crawlAllSources, crawlNaverNews, crawlDaumNews, crawlNaverWebSearch } from "./crawlerSources";
 import { enrichArticles } from "./publisherResolver";
+import { withGoogleRssPolicy } from "./googleRssPolicy";
 
 export interface CrawlJobDependencies {
   reviewOnly?: boolean;
@@ -35,7 +38,8 @@ export async function runCrawlJob(
   dependencies: CrawlJobDependencies = {},
 ): Promise<void> {
   validateDateRange(startDate, endDate);
-  const run = () => crawlWarnings.run([], () => executeCrawlJob(jobId, startDate, endDate, dependencies));
+  const run = () => withGoogleRssPolicy(() =>
+    crawlWarnings.run([], () => executeCrawlJob(jobId, startDate, endDate, dependencies)));
   return dependencies.db ? run() : withCrawlLock(run, jobId);
 }
 
@@ -48,7 +52,7 @@ async function executeCrawlJob(
   const database = dependencies.db ?? db;
   const analyze = dependencies.analyzeArticleSentiment ?? analyzeArticleSentiment;
   const crawlSources = dependencies.reviewOnly ? {all: async () => [], naver: async () => [], daum: async () => [], naverWeb: async () => []} : {
-    all: dependencies.crawlAllSources ?? (dependencies.alternative ? crawlOfficialArchives : crawlAllSources),
+    all: dependencies.crawlAllSources ?? (dependencies.alternative ? crawlOfficialArchives : crawlAllSourcesPaced),
     naver: dependencies.crawlNaverNews ?? (dependencies.alternative ? async()=>[] : crawlNaverNews),
     daum: dependencies.crawlDaumNews ?? crawlDaumNews,
     naverWeb: dependencies.crawlNaverWebSearch ?? (dependencies.alternative ? async()=>[] : crawlNaverWebSearch),
@@ -57,6 +61,7 @@ async function executeCrawlJob(
   const review = await (dependencies.createRelevanceReview || createRelevanceReview)(dependencies.db ? {directory: false, maxRequests: 0} : {});
   let totalCollected = 0;
   let totalDuplicates = 0;
+  let totalRefreshed = 0;
   let insertFailures = 0;
   let filtered = 0;
 
@@ -65,14 +70,14 @@ async function executeCrawlJob(
     .set({ currentSource: dependencies.alternative ? "언론사 자체검색 + 다음 검색으로 보완 중…" : "네이버 API·웹 + 다음 웹 + RSS 수집 중…", progress: 5 })
     .where(eq(crawlJobsTable.id, jobId));
 
-  logger.info({ jobId }, "Starting parallel crawl: Naver API + Daum API + RSS sources");
+  logger.info({ jobId }, "Starting paced crawl: Naver API + Daum API + RSS sources");
 
-  const [naverApiRes, naverWebRes, daumRes, rssRes] = await Promise.allSettled([
-    crawlSources.naver(startDate, endDate),
-    crawlSources.naverWeb(startDate, endDate),
-    crawlSources.daum(startDate, endDate),
-    crawlSources.all(startDate, endDate),
-  ]);
+  const [naverApiRes, naverWebRes, daumRes, rssRes] = await settleSequentially([
+    () => dependencies.crawlNaverNews || Date.now() - Date.parse(`${endDate}T23:59:59+09:00`) <= 21 * 86400_000 ? crawlSources.naver(startDate, endDate) : Promise.resolve([] as ArticleData[]),
+    () => dependencies.db || dependencies.reviewOnly ? crawlSources.naverWeb(startDate, endDate) : crawlDateChunks("네이버 웹", crawlSources.naverWeb, startDate, endDate),
+    () => dependencies.db || dependencies.reviewOnly ? crawlSources.daum(startDate, endDate) : crawlDateChunks("다음", crawlSources.daum, startDate, endDate),
+    () => crawlSources.all(startDate, endDate),
+  ], dependencies.db || dependencies.reviewOnly ? 0 : 2000);
 
   const naverApiResults = naverApiRes.status === "fulfilled" ? naverApiRes.value : [];
   const naverWebResults = naverWebRes.status === "fulfilled" ? naverWebRes.value : [];
@@ -109,9 +114,13 @@ async function executeCrawlJob(
   for (const [articleIndex, candidate] of articles.entries()) {
     let article = candidate;
     if (!isValidUrl(article.url) || !Number.isFinite(article.publishedAt.getTime())) { filtered++; continue; }
+    const reviewExisting = existingArticles.needsReview(article);
+    if (reviewExisting) article = (await review.assess(article)).article;
+    try { if (await existingArticles.refresh(article)) { totalRefreshed++; await review.delivered(article); continue; } }
+    catch (err) { insertFailures++; logger.error({err}, "Failed to refresh existing article"); continue; }
     if (await existingArticles.duplicate(article, candidates[articleIndex]?.url)) {
       totalDuplicates++;
-      await review.delivered(article);
+      if (!reviewExisting) await review.delivered(article);
       continue;
     }
 
@@ -181,5 +190,5 @@ async function executeCrawlJob(
     })
     .where(eq(crawlJobsTable.id, jobId));
 
-  logger.info({ jobId, totalCollected, totalDuplicates }, "Crawl job complete");
+  logger.info({ jobId, totalCollected, totalDuplicates, totalRefreshed }, "Crawl job complete");
 }

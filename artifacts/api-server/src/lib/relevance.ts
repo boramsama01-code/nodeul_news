@@ -5,12 +5,9 @@ export interface RelevanceDecision {
   evidence: string[];
   version: number;
 }
-export const RELEVANCE_VERSION = 1;
+import { isRelevant } from "./newsRelevance";
+export const RELEVANCE_VERSION = 2;
 
-// These identify the place, not a generic occurrence of the word 노들.
-const ISLAND = /노들\s*(?:예술\s*)?섬|\bnodeul\s+island\b/i;
-const PROJECT = /글로벌\s*노들/;
-const PROJECT_CONTEXT = /예술|문화\s*공간|수변|한강|랜드마크|조성|설계|건축|개발|공사|사업|재단/;
 const OTHER_PLACES = /노들\s*(?:역|로|남북?\s*고가|고가|나루\s*공원|장애인(?:자립생활)?\s*센터|장애인\s*야학|에스쁘와|강변)|스페이스\s*노들\s*케이/g;
 const sentences = (value: string) => value.normalize("NFKC").split(/(?<=[.!?。])\s+|[\r\n]+/).map(s => s.trim()).filter(Boolean);
 const excerpt = (text: string, pattern: RegExp) => {
@@ -26,11 +23,9 @@ export function classifyRelevance(title: string, content: string, fullBodyChecke
   const decide = (status: RelevanceStatus, reason: string, evidence: string[] = []): RelevanceDecision =>
     ({ status, reason, evidence, version: RELEVANCE_VERSION });
   const parts = [...sentences(title), ...sentences(content)];
-  const explicit = parts.find(s => ISLAND.test(s));
+  const explicit = [title, content].find(s => isRelevant(s, ""));
   // Positive island evidence wins even if the same article mentions a station or centre.
-  if (explicit) return decide("related", "노들섬 또는 노들예술섬 명칭 확인", [excerpt(explicit, ISLAND)]);
-  const project = parts.find(s => PROJECT.test(s) && PROJECT_CONTEXT.test(s));
-  if (project) return decide("related", "글로벌 노들의 공간·사업 문맥 확인", [excerpt(project, PROJECT)]);
+  if (explicit) return decide("related", "지정한 노들섬·예술섬 명칭 확인", [excerpt(explicit, /노들/)]);
   if (!fullBodyChecked) return decide("pending", "제목·요약만으로 판단할 수 없어 원문 확인 필요");
   const text = parts.join("\n");
   const others = [...text.matchAll(OTHER_PLACES)].map(m => m[0]);

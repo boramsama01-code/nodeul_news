@@ -1,3 +1,5 @@
+import { crawlAllSourcesPaced } from "./pacedSources";
+import { crawlDateChunks, settleSequentially } from "./crawlPacing";
 import { createRelevanceReview } from "./relevanceReview";
 import { loadExistingArticles } from "./existingArticles";
 import { db } from "@workspace/db";
@@ -8,12 +10,13 @@ import { crawlWarnings, validateDateRange, warnSource } from "./crawlRuntime";
 import { logger } from "./logger";
 import {
   isValidUrl,
-  extractPressName,
   ArticleData,
 } from "./crawlerUtils";
 import { analyzeArticleSentiment } from "./aiAnalysis";
 import { crawlAllSources, crawlNaverNews, crawlDaumNews, crawlNaverWebSearch } from "./crawlerSources";
 import { enrichArticles } from "./publisherResolver";
+import { withBulkFeedCache } from "./rssFeedCache";
+import { withGoogleRssPolicy } from "./googleRssPolicy";
 
 export interface BulkCrawlJobDependencies {
   db?: typeof db;
@@ -65,7 +68,8 @@ export async function runBulkCrawlJob(
   dependencies: BulkCrawlJobDependencies = {},
 ): Promise<void> {
   validateDateRange(startDate, endDate);
-  const run = () => crawlWarnings.run([], () => executeBulkCrawlJob(jobId, startDate, endDate, dependencies));
+  const run = () => withGoogleRssPolicy(() => withBulkFeedCache(() =>
+    crawlWarnings.run([], () => executeBulkCrawlJob(jobId, startDate, endDate, dependencies))));
   return dependencies.db ? run() : withCrawlLock(run, jobId);
 }
 
@@ -83,18 +87,17 @@ async function executeBulkCrawlJob(
   const database = dependencies.db ?? db;
   const analyze = dependencies.analyzeArticleSentiment ?? analyzeArticleSentiment;
   const crawlSources = {
-    all: dependencies.crawlAllSources ?? crawlAllSources,
+    all: dependencies.crawlAllSources ?? crawlAllSourcesPaced,
     naver: dependencies.crawlNaverNews ?? crawlNaverNews,
     daum: dependencies.crawlDaumNews ?? crawlDaumNews,
     naverWeb: dependencies.crawlNaverWebSearch ?? crawlNaverWebSearch,
   };
   const existingArticles = await loadExistingArticles(database);
   const review = await (dependencies.createRelevanceReview || createRelevanceReview)(dependencies.db ? {directory: false, maxRequests: 0} : {});
-  // media_direct 중복 관리: "제목__언론사명" 완전일치 기준 (전체 크롤 범위 유지)
-  const mediaDirectSet = new Set<string>();
   const sentimentCache = new Map<string, Promise<boolean>>();
   let totalCollected = 0;
   let totalDuplicates = 0;
+  let totalRefreshed = 0;
   let insertFailures = 0;
   let candidates = 0;
   const monthSummaries: string[] = [];
@@ -125,12 +128,12 @@ async function executeBulkCrawlJob(
 
     logger.info({ jobId, month: month.label, start: month.start, end: month.end }, "Bulk crawl: processing month");
 
-    const [naverApiRes, naverWebRes, daumRes, rssRes] = await Promise.allSettled([
-      Promise.resolve([] as ArticleData[]), // naver_api 제외: start<=1000 제약으로 과거 수집 불가, naver_web으로 대체
-      crawlSources.naverWeb(month.start, month.end),
-      crawlSources.daum(month.start, month.end),
-      crawlSources.all(month.start, month.end),
-    ]);
+    const [naverApiRes, naverWebRes, daumRes, rssRes] = await settleSequentially([
+      async () => [] as ArticleData[], // naver_api 제외: start<=1000 제약으로 과거 수집 불가, naver_web으로 대체
+      () => dependencies.db ? crawlSources.naverWeb(month.start, month.end) : crawlDateChunks("네이버 웹", crawlSources.naverWeb, month.start, month.end),
+      () => dependencies.db ? crawlSources.daum(month.start, month.end) : crawlDateChunks("다음", crawlSources.daum, month.start, month.end),
+      () => crawlSources.all(month.start, month.end),
+    ], dependencies.db ? 0 : 2000);
 
     const naverApiResults = naverApiRes.status === "fulfilled" ? naverApiRes.value : [];
     const naverWebResults = naverWebRes.status === "fulfilled" ? naverWebRes.value : [];
@@ -156,9 +159,13 @@ async function executeBulkCrawlJob(
     for (const [articleIndex, candidate] of articles.entries()) {
       let article = candidate;
       if (!isValidUrl(article.url) || !Number.isFinite(article.publishedAt.getTime())) continue;
+      const reviewExisting = existingArticles.needsReview(article);
+      if (reviewExisting) article = (await review.assess(article)).article;
+      try { if (await existingArticles.refresh(article)) { totalRefreshed++; await review.delivered(article); continue; } }
+      catch (err) { insertFailures++; logger.error({err}, "Failed to refresh existing article"); continue; }
       if (await existingArticles.duplicate(article, rawArticles[articleIndex]?.url)) {
         totalDuplicates++;
-        await review.delivered(article);
+        if (!reviewExisting) await review.delivered(article);
         continue;
       }
 
@@ -202,7 +209,7 @@ async function executeBulkCrawlJob(
         collected: totalCollected,
         duplicates: totalDuplicates,
         progress: progressAfterMonth,
-        total: totalCollected + totalDuplicates,
+        total: totalCollected + totalDuplicates + totalRefreshed,
       })
       .where(eq(crawlJobsTable.id, jobId));
 
@@ -219,12 +226,12 @@ async function executeBulkCrawlJob(
       status: insertFailures > 0 || (candidates === 0 && (crawlWarnings.getStore()?.length ?? 0) > 0) ? "error" : "done",
       progress: 100,
       currentSource: "",
-      total: totalCollected + totalDuplicates,
+      total: totalCollected + totalDuplicates + totalRefreshed,
       collected: totalCollected,
       duplicates: totalDuplicates,
       error: [`수집 기간 ${startDate} ~ ${endDate}`, `후보 ${candidates}, 저장 실패 ${insertFailures}`, review.summary(), ...monthSummaries, existingArticles.summary(), ...(crawlWarnings.getStore() ?? [])].join("\n"),
     })
     .where(eq(crawlJobsTable.id, jobId));
 
-  logger.info({ jobId, totalCollected, totalDuplicates, totalMonths }, "Bulk crawl job complete");
+  logger.info({ jobId, totalCollected, totalDuplicates, totalRefreshed, totalMonths }, "Bulk crawl job complete");
 }

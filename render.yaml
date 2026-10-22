@@ -1,0 +1,53 @@
+# Manual collection only; DB expires after 30 days, web sleeps after 15 idle minutes.
+# Only the news app and its existing DB belong to this isolated project.
+projects:
+  - name: nodeul-news
+    environments:
+      - name: production
+        networking:
+          isolation: enabled
+        services:
+          - type: web
+            name: nodeul-news
+            runtime: node
+            region: singapore
+            plan: free
+            repo: https://github.com/boramsama01-code/nodeul_news
+            branch: main
+            autoDeployTrigger: commit
+            buildCommand: npm install --global pnpm@11.25.0 && pnpm install --frozen-lockfile && pnpm build:standalone
+            startCommand: node scripts/start-render.mjs
+            healthCheckPath: /api/healthz
+            envVars:
+              - key: NODE_VERSION
+                value: "22"
+              - key: NODE_ENV
+                value: production
+              - key: DATABASE_URL
+                fromDatabase:
+                  name: nodeul-news-db
+                  property: connectionString
+              - key: APP_PASSWORD
+                generateValue: true
+              - key: CONFIG_ENCRYPTION_KEY
+                generateValue: true
+              - key: STATE_BACKEND
+                value: postgres
+              - key: WEB_DIST
+                value: artifacts/web/dist/public
+              - key: RUN_SCHEDULER
+                value: "false"
+              - key: IMPORT_ARCHIVE_ONCE
+                value: "true"
+              - key: DEPLOYMENT_MODE
+                value: free-trial
+              - key: DATABASE_EXPIRES_AT
+                value: "2026-11-21T01:19:59.539382Z"
+        databases:
+          - name: nodeul-news-db
+            databaseName: nodeul_news_db
+            user: nodeul_news_db_user
+            region: singapore
+            plan: free
+            postgresMajorVersion: "16"
+            ipAllowList: []

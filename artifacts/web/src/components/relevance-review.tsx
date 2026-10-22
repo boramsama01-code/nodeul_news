@@ -20,7 +20,7 @@ export function RelevanceReview({onRetry, disabled}: {onRetry: () => void; disab
       const response = await fetch(`/api/crawl/relevance?status=${status}&page=${page}`);
       if (!response.ok) throw new Error("확인 기록 조회 실패");
       return response.json();
-    }, refetchInterval: 10_000,
+    }, refetchInterval: disabled ? 10_000 : false,
   });
   return <Card>
     <CardHeader>

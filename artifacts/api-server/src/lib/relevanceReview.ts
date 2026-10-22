@@ -4,6 +4,7 @@ import { join } from "node:path";
 import type { ArticleData } from "./crawlerUtils";
 import { classifyRelevance, RELEVANCE_VERSION, type RelevanceDecision } from "./relevance";
 import { resolveArticleContent, flushPublisherCache } from "./publisherResolver";
+import { readStates, writeState, usesDatabaseState } from "./persistentState";
 
 export interface ReviewRecord {
   article: Omit<ArticleData, "publishedAt"> & {publishedAt: string};
@@ -25,7 +26,11 @@ const checkReason = (reason: string) => ({
   "non-html": "기사 본문 형식이 아닌 응답",
 }[reason] || reason);
 
-export async function readRelevanceReviews(directory = reviewDirectory()): Promise<ReviewRecord[]> {
+export async function readRelevanceReviews(directory?: string): Promise<ReviewRecord[]> {
+  if (directory === undefined && usesDatabaseState()) {
+    return (await readStates<ReviewRecord>("relevance-review:")).sort((a,b) => a.checkedAt.localeCompare(b.checkedAt));
+  }
+  directory ??= reviewDirectory();
   let names: string[];
   try { names = await readdir(directory); }
   catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return []; throw error; }
@@ -45,15 +50,18 @@ export async function createRelevanceReview(options: {
   resolve?: typeof resolveArticleContent;
   now?: () => number;
 } = {}) {
+  const database = options.directory === undefined && usesDatabaseState();
   const directory = options.directory === false ? false : options.directory || reviewDirectory();
-  const records = new Map((directory ? await readRelevanceReviews(directory) : []).map(r => [key(r.article), r]));
+  const records = new Map((database ? await readRelevanceReviews() : directory ? await readRelevanceReviews(directory) : []).map(r => [key(r.article), r]));
   const now = options.now || Date.now;
   const budget = {remaining: options.maxRequests ?? 60};
   const resolve = options.resolve || resolveArticleContent;
   const counts = {related: 0, unrelated: 0, pending: 0};
   async function save(record: ReviewRecord) {
     const id = key(record.article);
-    if (directory) {
+    if (database) {
+      await writeState(`relevance-review:${id}`, record);
+    } else if (directory) {
       await mkdir(directory, {recursive: true});
       const file = join(directory, `${id}.json`), temporary = `${file}.${process.pid}.tmp`;
       await writeFile(temporary, JSON.stringify(record));

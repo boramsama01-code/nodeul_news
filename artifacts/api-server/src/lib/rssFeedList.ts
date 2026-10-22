@@ -1,3 +1,5 @@
+import { GOOGLE_NEWS_QUERY } from "./newsRelevance";
+
 export type NewsSourceMethod = "rss_direct" | "google_news_rss";
 
 export interface NewsSource {
@@ -7,9 +9,9 @@ export interface NewsSource {
   domain: string;
 }
 
-export const NEWS_SOURCES: NewsSource[] = [
-  // ── 구글뉴스 RSS — "노들" 단일 쿼리로 전 언론사 수집 (최신순/관련순 두 피드) ──
-  {"name":"구글뉴스-노들(최신)","method":"google_news_rss","url":"https://news.google.com/rss/search?q=%EB%85%B8%EB%93%A4&hl=ko&gl=KR&ceid=KR:ko","domain":"news.google.com"},
+const SOURCE_DEFINITIONS: NewsSource[] = [
+  // ── 구글뉴스 RSS — 아래에서 공통 키워드와 언론사 범위를 적용 ──
+  {"name":"구글뉴스-노들섬(최신)","method":"google_news_rss","url":"https://news.google.com/rss/search?hl=ko&gl=KR&ceid=KR:ko","domain":"news.google.com"},
   // ── 주요 언론사 전체 RSS (키워드 필터링) ──
   {"name":"경향신문","method":"rss_direct","url":"https://www.khan.co.kr/rss/rssdata/total_news.xml","domain":"khan.co.kr"},
   ...["Pol", "Eco", "Soc", "Int", "Ent", "Spo", "Golf", "Life", "Tra"].map(section => ({name: "국민일보", method: "rss_direct" as const, url: `https://www.kmib.co.kr/rss/data/kmib${section}Rss.xml`, domain: "kmib.co.kr"})),
@@ -36,9 +38,18 @@ export const NEWS_SOURCES: NewsSource[] = [
   {"name":"지디넷코리아","method":"rss_direct","url":"https://zdnet.co.kr/feed/article_list2.xml","domain":"zdnet.co.kr"},
   {"name":"미디어오늘","method":"rss_direct","url":"https://www.mediatoday.co.kr/rss/allArticle.xml","domain":"mediatoday.co.kr"},
   {"name":"노컷뉴스","method":"rss_direct","url":"https://www.nocutnews.co.kr/rss","domain":"nocutnews.co.kr"},
-  {"name":"뉴스핌","method":"rss_direct","url":"https://www.newspim.com/rss/view/newspim","domain":"newspim.com"},
-  {"name":"데일리안","method":"rss_direct","url":"https://center.dailian.co.kr/sitemap/newssitemap.xml","domain":"dailian.co.kr"},
-  {"name":"비즈워치","method":"rss_direct","url":"https://news.bizwatch.co.kr/sitemap/sitemap_cur_news.xml","domain":"bizwatch.co.kr"},
+  {"name":"뉴스핌","method":"rss_direct","url":"https://rss.newspim.com/news/category/1","domain":"newspim.com"},
+  {"name":"뉴스핌","method":"rss_direct","url":"https://rss.newspim.com/news/category/110","domain":"newspim.com"},
+  ...["sokbo", "culture", "met"].map(section => ({name: "뉴시스", method: "rss_direct" as const, url: `https://www.newsis.com/RSS/${section}.xml`, domain: "newsis.com"})),
+  ...["news_all", "news_culture"].map(section => ({name: "아이뉴스24", method: "rss_direct" as const, url: `https://www.inews24.com/rss/${section}.xml`, domain: "inews24.com"})),
+  {"name":"MBN","method":"rss_direct","url":"https://www.mbn.co.kr/rss/","domain":"mbn.co.kr"},
+  {"name":"MBN","method":"rss_direct","url":"https://www.mbn.co.kr/rss/culture/","domain":"mbn.co.kr"},
+  {"name":"서울문화투데이","method":"rss_direct","url":"https://www.sctoday.co.kr/rss/allArticle.xml","domain":"sctoday.co.kr"},
+  {"name":"뉴스컬처","method":"rss_direct","url":"https://www.newsculture.press/rss/allArticle.xml","domain":"newsculture.press"},
+  {"name":"프라임경제","method":"rss_direct","url":"https://www.newsprime.co.kr/data/rss/news.xml","domain":"newsprime.co.kr"},
+  {"name":"트래비","method":"rss_direct","url":"https://www.travie.com/rss/allArticle.xml","domain":"travie.com"},
+  {"name":"데일리안","method":"rss_direct","url":"https://www.dailian.co.kr/rss/","domain":"dailian.co.kr"},
+  {"name":"비즈워치","method":"rss_direct","url":"https://news.bizwatch.co.kr/rss/bw_news.xml","domain":"bizwatch.co.kr"},
   {"name":"쿠키뉴스","method":"rss_direct","url":"https://www.kukinews.com/rss","domain":"kukinews.com"},
   {"name":"프레시안","method":"rss_direct","url":"https://www.pressian.com/rss","domain":"pressian.com"},
   {"name":"한겨레21","method":"rss_direct","url":"https://h21.hani.co.kr/rss/","domain":"h21.hani.co.kr"},
@@ -149,6 +160,15 @@ export const NEWS_SOURCES: NewsSource[] = [
   {"name":"헬로디디","method":"google_news_rss","url":"https://news.google.com/rss/search?q=%EB%85%B8%EB%93%A4%EC%84%AC+site:hellodd.com&hl=ko&gl=KR&ceid=KR:ko","domain":"hellodd.com"},
   {"name":"OBS","method":"google_news_rss","url":"https://news.google.com/rss/search?q=%EB%85%B8%EB%93%A4%EC%84%AC+site:obs.co.kr&hl=ko&gl=KR&ceid=KR:ko","domain":"obs.co.kr"},
 ];
+
+// Keep the publisher scope while using the approved search terms everywhere.
+export const NEWS_SOURCES: NewsSource[] = SOURCE_DEFINITIONS.map(source => {
+  if (source.method !== "google_news_rss") return source;
+  const url = new URL(source.url);
+  const scope = source.domain === "news.google.com" ? "" : ` site:${source.domain}`;
+  url.searchParams.set("q", `(${GOOGLE_NEWS_QUERY})${scope}`);
+  return { ...source, url: url.toString() };
+});
 
 export const RSS_DIRECT_SOURCES = NEWS_SOURCES.filter((s) => s.method === "rss_direct");
 export const GOOGLE_NEWS_SOURCES = NEWS_SOURCES.filter((s) => s.method === "google_news_rss");

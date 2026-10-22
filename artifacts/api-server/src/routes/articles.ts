@@ -11,6 +11,7 @@ import {
   desc,
   isNull,
   isNotNull,
+  not,
 } from "drizzle-orm";
 import {
   ListArticlesQueryParams,
@@ -25,6 +26,8 @@ import {
 import { analyzeArticleSentiment } from "../lib/aiAnalysis";
 import { logger } from "../lib/logger";
 import ExcelJS from "exceljs";
+import { relevantArticleCondition } from "../lib/articleRelevance";
+import { isRelevant } from "../lib/newsRelevance";
 
 const router: IRouter = Router();
 
@@ -39,7 +42,7 @@ router.get("/articles", async (req, res): Promise<void> => {
   const { year, month, keyword, isNegative, isSelfPR, page = 1, limit = 20 } = parsed.data;
   const offset = (page - 1) * limit;
 
-  const conditions = [isNull(articlesTable.deletedAt)];
+  const conditions = [isNull(articlesTable.deletedAt), relevantArticleCondition()];
 
   if (year != null) {
     conditions.push(
@@ -128,6 +131,25 @@ router.get("/articles/trash", async (req, res): Promise<void> => {
   });
 });
 
+// POST /articles/trash-irrelevant — review or move only currently active nonmatches.
+router.post("/articles/trash-irrelevant", async (req, res): Promise<void> => {
+  const dryRun = req.body?.dryRun;
+  if (typeof dryRun !== "boolean") {
+    res.status(400).json({ error: "dryRun을 true 또는 false로 지정해 주세요." });
+    return;
+  }
+  const where = and(isNull(articlesTable.deletedAt), not(relevantArticleCondition()));
+  if (dryRun) {
+    const [row] = await db.select({ count: sql<number>`COUNT(*)` }).from(articlesTable).where(where);
+    res.json({ dryRun: true, count: Number(row?.count ?? 0) });
+    return;
+  }
+  // One atomic soft-delete rechecks the predicate; existing trash is untouched.
+  const moved = await db.update(articlesTable).set({ deletedAt: new Date() }).where(where)
+    .returning({ id: articlesTable.id });
+  res.json({ dryRun: false, count: moved.length });
+});
+
 // POST /articles
 router.post("/articles", async (req, res): Promise<void> => {
   const parsed = CreateArticleBody.safeParse(req.body);
@@ -137,6 +159,10 @@ router.post("/articles", async (req, res): Promise<void> => {
   }
 
   const data = parsed.data;
+  if (!isRelevant(data.title, data.content ?? "")) {
+    res.status(400).json({ error: "제목 또는 본문에 노들섬, 예술섬노들, 글로벌 노들 예술섬, 노들 글로벌 예술섬 중 하나가 포함되어야 합니다." });
+    return;
+  }
   const publishedAt = new Date(data.publishedAt);
   if (isNaN(publishedAt.getTime())) {
     res.status(400).json({ error: "Invalid publishedAt date" });
@@ -286,7 +312,7 @@ router.post("/articles/:id/analyze", async (req, res): Promise<void> => {
 router.get("/articles/export", async (req, res): Promise<void> => {
   const { startDate, endDate } = req.query as { startDate?: string; endDate?: string };
 
-  const conditions = [isNull(articlesTable.deletedAt)];
+  const conditions = [isNull(articlesTable.deletedAt), relevantArticleCondition()];
   if (startDate) {
     conditions.push(gte(articlesTable.publishedAt, new Date(startDate + "T00:00:00+09:00")));
   }

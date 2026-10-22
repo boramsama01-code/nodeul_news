@@ -15,6 +15,8 @@ import { logger } from "../lib/logger";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { readRelevanceReviews } from "../lib/relevanceReview";
+import { readState, usesDatabaseState } from "../lib/persistentState";
+import type { RssHealthItem } from "../lib/rssHealthAudit";
 
 const router: IRouter = Router();
 router.get("/crawl/relevance", async (req, res) => {
@@ -34,6 +36,15 @@ router.get("/crawl/relevance", async (req, res) => {
 router.get("/crawl/provider-health", async (_req,res)=>{res.json(await readProviderHealth());});
 router.get("/crawl/source-health", async (_req, res) => {
   try {
+    if (usesDatabaseState()) {
+      const report = await readState<{checkedAt:string;items:RssHealthItem[]}>("rss-health-audit-latest");
+      res.json({checkedAt:report?.checkedAt || null,sources:(report?.items || []).map(item => ({
+        name:item.name,domain:new URL(item.url).hostname,method:"rss_direct",endpoint:item.url,
+        status:item.status === "ok" ? "normal" : item.status === "empty" ? "partial" : "unsupported",
+        reason:item.error || (item.status === "ok" ? "official_feed_available" : "현재 피드에서 기사 항목을 확인하지 못함"),itemCount:item.itemCount,
+      }))});
+      return;
+    }
     const report = JSON.parse(await readFile(join(process.env.DATA_DIR || ".local", "source-audit.json"), "utf8"));
     res.json(report);
   } catch { res.json({ checkedAt: null, sources: [] }); }

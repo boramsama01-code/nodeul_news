@@ -1,7 +1,7 @@
 import axios from "axios";
 import * as cheerio from "cheerio";
 import iconv from "iconv-lite";
-import Parser from "rss-parser";
+import { discoverFeedUrlsFromHtml, parseOfficialFeedText } from "./rssTransport";
 import type { NewsSource } from "./rssFeedList";
 
 export interface OfficialFeedItem {
@@ -34,7 +34,6 @@ export interface FeedOptions {
   maxRequests?: number;
 }
 
-const parser = new Parser({ customFields: { item: [["source", "source"], ["dc:creator", "creator"]] } });
 const feedCache = new Map<string, { expires: number; value: OfficialFeedResult }>();
 const pendingFeeds = new Map<string, Promise<OfficialFeedResult>>();
 const responseCache = new Map<string, { expires: number; value: Promise<FeedResponse> }>();
@@ -105,8 +104,9 @@ export async function parseOfficialDocument(body: string, url: string): Promise<
   const root = $.root().children().first()[0]?.tagName?.toLowerCase();
   if (root === "rss" || root === "feed" || root === "rdf:rdf") {
     try {
-      const feed = await parser.parseString(body);
-      return { kind: root === "feed" ? "atom" : "rss", items: feed.items as OfficialFeedItem[], sitemaps: [], outcome: feed.items.length ? "feed_ok" : "empty_feed" };
+      const parsed = await parseOfficialFeedText(body);
+      const items = (parsed.feed.items || []) as OfficialFeedItem[];
+      return { kind: root === "feed" ? "atom" : "rss", items, sitemaps: [], outcome: items.length ? parsed.parseMode === "rss-parser" ? "feed_ok" : `feed_repaired_${parsed.parseMode}` : "empty_feed" };
     } catch (err) {
       return { kind: null, items: [], sitemaps: [], outcome: `invalid_xml: ${err instanceof Error ? err.message.slice(0, 150) : String(err)}` };
     }
@@ -131,7 +131,7 @@ export async function parseOfficialDocument(body: string, url: string): Promise<
 
 export function discoverOfficialLinks(body: string, base: string): { feeds: string[]; sitemaps: string[] } {
   const $ = cheerio.load(body);
-  const feeds = new Set<string>();
+  const feeds = new Set<string>(discoverFeedUrlsFromHtml(body, base));
   const sitemaps = new Set<string>();
   const add = (set: Set<string>, raw?: string) => {
     if (!raw) return;
