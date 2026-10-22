@@ -4,7 +4,7 @@ import * as cheerio from "cheerio";
 import { logger } from "./logger";
 import { isRelevant, stripHtml, isValidUrl, resolveMediaName, resolveMediaNameStrict, ArticleData } from "./crawlerUtils";
 import { NEWS_SOURCES, GOOGLE_NEWS_SOURCES, NewsSource } from "./rssFeedList";
-import { googleFeedUrl, kstDate, mapConcurrent, parseRssPublishedAt, warnSource, validateDateRange } from "./crawlRuntime";
+import { googleFeedUrl, kstDate, mapConcurrent, parseRssPublishedAt, shiftDate, warnSource, validateDateRange } from "./crawlRuntime";
 import { COLLECTION_KEYWORDS, GOOGLE_NEWS_QUERY } from "./newsRelevance";
 import { fetchRssFeed } from "./rssFeedCache";
 import { requestGoogleRss, GoogleRssCircuitOpenError } from "./googleRssPolicy";
@@ -411,7 +411,25 @@ async function crawlDaumWebForMonth(
       // pages. Stop on dates only when every result is valid and too old.
       if (outOfRangeCount === items.length) break;
       if (page === 20 && items.length >= 10) {
-        warnSource("다음", `${query} ${startDate}~${endDate}: 20페이지 탐색 한도 도달 (일부 기사 누락 가능)`);
+        if (startDate < endDate) {
+          const spanDays = (Date.parse(endDate) - Date.parse(startDate)) / 86400_000;
+          const leftEnd = shiftDate(startDate, Math.floor(spanDays / 2));
+          const rightStart = shiftDate(leftEnd, 1);
+          logger.info({query, startDate, endDate, leftEnd, rightStart}, "Daum 20페이지 도달: 기간을 나눠 보완 조회");
+          // Keep parent results even if a child request fails. Each child has
+          // independent page detection; merge accepted URLs only after crawling.
+          await new Promise((r) => setTimeout(r, 300));
+          for (const [childStart, childEnd] of [[startDate, leftEnd], [rightStart, endDate]] as const) {
+            const childResults = await crawlDaumWebForMonth(query, childStart, childEnd);
+            for (const article of childResults) {
+              if (seenUrls.has(article.url)) continue;
+              seenUrls.add(article.url);
+              results.push(article);
+            }
+          }
+          return results;
+        }
+        warnSource("다음", `${query} ${startDate}: 하루 범위에서도 20페이지 탐색 한도 도달 (일부 기사 누락 가능)`);
       }
 
       await new Promise((r) => setTimeout(r, 300));

@@ -164,6 +164,66 @@ test("Daum paginates past mixed, unknown, and malformed dates but stops on an en
   }
 });
 
+test("Daum splits capped short and leap months into nonoverlapping dates and merges parent results", async t => {
+  const previousTimeout = globalThis.setTimeout;
+  t.mock.method(globalThis, "setTimeout", (callback: () => void) => previousTimeout(callback, 0));
+  const item = (day: string, id: string) => `<li><div><div class="item-title"><a href="https://v.daum.net/v/${day}1200${id}">노들섬 행사 ${id}</a></div></div></li>`;
+  for (const [start, end, expectedHalves] of [
+    ["2026-02-01", "2026-02-28", [["20260201", "20260214"], ["20260215", "20260228"]]],
+    ["2024-02-01", "2024-02-29", [["20240201", "20240215"], ["20240216", "20240229"]]],
+    ["2024-02-28", "2024-02-29", [["20240228", "20240228"], ["20240229", "20240229"]]],
+  ] as const) {
+    const parentStart = start.replace(/-/g, ""), parentEnd = end.replace(/-/g, "");
+    const requests: Array<{sd: string; ed: string; page: number}> = [];
+    const warnings: string[] = [];
+    const mockGet = t.mock.method(axios, "get", async (_url: string, config: {params: {q: string; sd: string; ed: string; page: number}}) => {
+      const {q, sd, ed, page} = config.params;
+      if (q !== COLLECTION_KEYWORDS[0]) return {data:"검색결과가 없습니다"};
+      assert.ok(sd.endsWith("000000")); assert.ok(ed.endsWith("235959"));
+      requests.push({sd:sd.slice(0,8), ed:ed.slice(0,8), page});
+      if (sd.slice(0,8) === parentStart && ed.slice(0,8) === parentEnd) {
+        return {data:Array.from({length:10}, (_, index) => item(parentEnd, String(page * 10 + index))).join("")};
+      }
+      if (page > 1) return {data:"검색결과가 없습니다"};
+      const duplicateParent = ed.slice(0,8) === parentEnd ? item(parentEnd, "10") : "";
+      return {data:duplicateParent + item(sd.slice(0,8), "999")};
+    });
+    const articles = await crawlWarnings.run(warnings, () => crawlDaumNews(start, end));
+    assert.deepEqual(requests.filter(request => request.page === 1).map(({sd, ed}) => [sd, ed]), [[parentStart,parentEnd], ...expectedHalves]);
+    assert.equal(requests.length, 24);
+    assert.equal(articles.length, 202);
+    assert.equal(new Set(articles.map(article => article.url)).size, 202);
+    assert.ok(articles.some(article => article.url.endsWith(`${parentEnd}120010`)));
+    assert.equal(warnings.length, 0);
+    mockGet.mock.restore();
+  }
+});
+
+test("Daum can recursively split a capped child and preserves parent articles when a child fails", async t => {
+  const previousTimeout = globalThis.setTimeout;
+  t.mock.method(globalThis, "setTimeout", (callback: () => void) => previousTimeout(callback, 0));
+  const firstPages: string[] = [];
+  const warnings: string[] = [];
+  t.mock.method(axios, "get", async (_url: string, config: {params: {q: string; sd: string; ed: string; page: number}}) => {
+    const {q, sd, ed, page} = config.params;
+    if (q !== COLLECTION_KEYWORDS[0]) return {data:"검색결과가 없습니다"};
+    const start = sd.slice(0,8), end = ed.slice(0,8);
+    if (page === 1) firstPages.push(`${start}~${end}`);
+    if (start === "20240227" && end === "20240227") {
+      const error = Object.assign(new Error("test child unavailable"), {response:{status:403}});
+      throw error;
+    }
+    if (start === end && page > 1) return {data:"검색결과가 없습니다"};
+    const count = start === end ? 1 : 10;
+    return {data:Array.from({length:count}, (_, index) => `<li><div><div class="item-title"><a href="https://v.daum.net/v/${end}1200${start}${page * 10 + index}">노들섬 행사 ${start}-${page}-${index}</a></div></div></li>`).join("")};
+  });
+  const articles = await crawlWarnings.run(warnings, () => crawlDaumNews("2024-02-27", "2024-02-29"));
+  assert.deepEqual(firstPages, ["20240227~20240229", "20240227~20240228", "20240227~20240227", "20240228~20240228", "20240229~20240229"]);
+  assert.equal(articles.length, 402);
+  assert.ok(warnings.some(warning => warning.includes("test child unavailable")));
+  assert.ok(warnings.every(warning => !warning.includes("탐색 한도")));
+});
+
 test("Naver follows observed JSON continuation pages for all four keywords and exact day bounds", async t => {
   const previousTimeout = globalThis.setTimeout;
   t.mock.method(globalThis, "setTimeout", (callback: () => void) => previousTimeout(callback, 0));
@@ -243,11 +303,11 @@ test("full final portal pages record pagination coverage limits", async t => {
   });
   const warnings: string[] = [];
   await crawlWarnings.run(warnings, async () => {
-    assert.equal((await crawlDaumNews("2026-01-01", "2026-01-31")).length, 200);
+    assert.equal((await crawlDaumNews("2026-01-10", "2026-01-10")).length, 200);
     assert.equal((await crawlNaverWebSearch("2026-01-01", "2026-01-31")).length, 1000);
   });
   assert.deepEqual(pageCalls, {daum: 20, naver: 100});
-  assert.ok(warnings.some(warning => /다음.*20페이지 탐색 한도/.test(warning)));
+  assert.ok(warnings.some(warning => /다음.*하루 범위에서도 20페이지 탐색 한도/.test(warning)));
   assert.ok(warnings.some(warning => /네이버 웹.*100페이지 탐색 한도/.test(warning)));
 });
 
