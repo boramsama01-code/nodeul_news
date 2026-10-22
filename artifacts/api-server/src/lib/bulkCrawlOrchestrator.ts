@@ -15,6 +15,7 @@ import {
 import { analyzeArticleSentiment } from "./aiAnalysis";
 import { crawlAllSources, crawlNaverNews, crawlDaumNews, crawlNaverWebSearch } from "./crawlerSources";
 import { loadExistingArticles, refreshExcludedArticle } from "./existingArticles";
+import { withBulkFeedCache } from "./rssFeedCache";
 
 export interface BulkCrawlJobDependencies {
   db?: typeof db;
@@ -64,7 +65,8 @@ export async function runBulkCrawlJob(
   dependencies: BulkCrawlJobDependencies = {},
 ): Promise<void> {
   validateDateRange(startDate, endDate);
-  const run = () => crawlWarnings.run([], () => executeBulkCrawlJob(jobId, startDate, endDate, dependencies));
+  const run = () => withBulkFeedCache(() =>
+    crawlWarnings.run([], () => executeBulkCrawlJob(jobId, startDate, endDate, dependencies)));
   return dependencies.db ? run() : withCrawlLock(run, jobId);
 }
 

@@ -6,6 +6,7 @@ import { isRelevant, stripHtml, isValidUrl, resolveMediaName, resolveMediaNameSt
 import { NEWS_SOURCES, GOOGLE_NEWS_SOURCES, NewsSource } from "./rssFeedList";
 import { googleFeedUrl, kstDate, mapConcurrent, parseRssPublishedAt, warnSource, validateDateRange } from "./crawlRuntime";
 import { COLLECTION_KEYWORDS, GOOGLE_NEWS_QUERY } from "./newsRelevance";
+import { fetchRssFeed } from "./rssFeedCache";
 
 const TIMEOUT_MS = 30000;
 
@@ -48,7 +49,7 @@ export async function crawlSource(
 
   try {
     const url = source.method === "google_news_rss" ? googleFeedUrl(source.url, startDate, endDate) : source.url;
-    const feed = await withRetry(() => rssParser.parseURL(url), 1);
+    const feed = await fetchRssFeed(source.method, url, () => withRetry(() => rssParser.parseURL(url), 1));
 
     for (const item of feed.items || []) {
       try {
@@ -371,7 +372,9 @@ async function crawlDaumWebForMonth(
         const dateStr = dateM ? `${dateM[1]}-${dateM[2]}-${dateM[3]}` : parseNaverDateText($(el).closest("li").find(".item-contents .gem-subinfo, .item-contents .txt_info, .gem-subinfo").text());
         if (!dateStr) { warnSource("다음", "발행일을 추출할 수 없는 기사 제외"); return; }
         const pubDate = new Date(`${dateStr}T12:00:00+09:00`);
-        if (isNaN(pubDate.getTime())) return;
+        // Date can normalize impossible dates (for example February 30). Such
+        // items must not count as evidence that the entire page is too old.
+        if (isNaN(pubDate.getTime()) || kstDate(pubDate) !== dateStr) return;
 
         if (pubDate > end) return;
         if (pubDate < start) { outOfRangeCount++; return; }
@@ -400,8 +403,12 @@ async function crawlDaumWebForMonth(
         });
       });
 
-      // Stop if most items are before the start date
-      if (outOfRangeCount > 0) break;
+      // A pinned, misordered, or undated result must not hide later in-range
+      // pages. Stop on dates only when every result is valid and too old.
+      if (outOfRangeCount === items.length) break;
+      if (page === 20 && items.length >= 10) {
+        warnSource("다음", `${query} ${startDate}~${endDate}: 20페이지 탐색 한도 도달 (일부 기사 누락 가능)`);
+      }
 
       await new Promise((r) => setTimeout(r, 300));
     } catch (err) {
@@ -564,6 +571,10 @@ export async function crawlNaverWebSearch(
             isSelfPR:    false,
             source:      "naver_web",
           });
+        }
+
+        if (start === 991 && articles.length >= 10) {
+          warnSource("네이버 웹", `${query} ${startDate}~${endDate}: 100페이지 탐색 한도 도달 (일부 기사 누락 가능)`);
         }
 
         await new Promise((r) => setTimeout(r, 800));

@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import axios from "axios";
 import Parser from "rss-parser";
-import { googleFeedUrl, kstDate, mapConcurrent, parseRssPublishedAt, validateDateRange } from "./crawlRuntime";
+import { crawlWarnings, googleFeedUrl, kstDate, mapConcurrent, parseRssPublishedAt, validateDateRange } from "./crawlRuntime";
 import { crawlDaumNews, crawlNaverNews, crawlNaverWebSearch, crawlSource, parseNaverDateText } from "./crawlerSources";
 import { COLLECTION_KEYWORDS, GOOGLE_NEWS_QUERY } from "./newsRelevance";
 import { GOOGLE_NEWS_SOURCES } from "./rssFeedList";
@@ -136,6 +136,55 @@ test("portal pagination can accept a later relevant snippet for a previously rej
     assert.equal(naver[0].content, "노들섬 행사 안내");
     assert.deepEqual(pageCalls, { daum: 3, naver: 3 });
   } finally { axios.get = previousGet; }
+});
+
+test("Daum paginates past mixed, unknown, and malformed dates but stops on an entirely old page", async t => {
+  const previousTimeout = globalThis.setTimeout;
+  t.mock.method(globalThis, "setTimeout", (callback: () => void) => previousTimeout(callback, 0));
+  const item = (url: string) => `<li><div class="item-bundle-mid"><div class="item-title"><strong><a href="${url}">노들섬 행사</a></strong></div></div></li>`;
+  const old = item("https://v.daum.net/v/20260301120000123");
+  const next = item("https://v.daum.net/v/20260402120000123");
+
+  for (const [other, expectedCount, expectedCalls] of [
+    [item("https://v.daum.net/v/20260401120000123"), 2, 3],
+    [item("https://example.com/no-publication-date"), 1, 3],
+    [item("https://v.daum.net/v/20260230120000123"), 1, 3],
+    [item("https://v.daum.net/v/20260302120000123"), 0, 1],
+  ] as const) {
+    let calls = 0;
+    const mockGet = t.mock.method(axios, "get", async (_url: string, config: {params: {q: string; page: number}}) => {
+      if (config.params.q !== COLLECTION_KEYWORDS[0]) return { data: "검색결과가 없습니다" };
+      calls++;
+      return {data: config.params.page === 1 ? old + other : config.params.page === 2 ? next : old};
+    });
+    const articles = await crawlDaumNews("2026-04-01", "2026-04-30");
+    assert.equal(articles.length, expectedCount);
+    assert.equal(calls, expectedCalls);
+    mockGet.mock.restore();
+  }
+});
+
+test("full final portal pages record pagination coverage limits", async t => {
+  const previousTimeout = globalThis.setTimeout;
+  t.mock.method(globalThis, "setTimeout", (callback: () => void) => previousTimeout(callback, 0));
+  const pageCalls = {daum: 0, naver: 0};
+  t.mock.method(axios, "get", async (url: string, config: {params: {q?: string; query?: string; page?: number; start?: number}}) => {
+    if ((config.params.q ?? config.params.query) !== COLLECTION_KEYWORDS[0]) return {data: "검색결과가 없습니다"};
+    const daum = url.includes("daum.net");
+    pageCalls[daum ? "daum" : "naver"]++;
+    const page = daum ? config.params.page! : config.params.start!;
+    return {data: Array.from({length: 10}, (_, index) => daum
+      ? `<li><div><div class="item-title"><a href="https://v.daum.net/v/202601101200${page * 10 + index}">노들섬 행사 ${page}-${index}</a></div></div></li>`
+      : `<div>2026.01.10.</div><a data-heatmap-target=".tit" href="https://example.com/${page}/${index}">노들섬 행사 ${page}-${index}</a>`).join("")};
+  });
+  const warnings: string[] = [];
+  await crawlWarnings.run(warnings, async () => {
+    assert.equal((await crawlDaumNews("2026-01-01", "2026-01-31")).length, 200);
+    assert.equal((await crawlNaverWebSearch("2026-01-01", "2026-01-31")).length, 1000);
+  });
+  assert.deepEqual(pageCalls, {daum: 20, naver: 100});
+  assert.ok(warnings.some(warning => /다음.*20페이지 탐색 한도/.test(warning)));
+  assert.ok(warnings.some(warning => /네이버 웹.*100페이지 탐색 한도/.test(warning)));
 });
 
 test("restart catches up after downtime and overlaps recent days", async () => {
