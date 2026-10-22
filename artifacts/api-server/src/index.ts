@@ -13,6 +13,7 @@ const server = app.listen(port, process.env.HOST || "0.0.0.0", () => {
   logger.info({ port }, "Server listening");
   if (process.env.RUN_SCHEDULER === "true") stopScheduler = startScheduler();
   if (process.env.AUTO_AUDIT_START_DATE) {
+    const delayMs = Math.max(5_000, Number(process.env.AUTO_AUDIT_START_DELAY_MS || 45_000));
     setTimeout(() => {
       void startConfiguredHistoricalAudit().catch((error) => {
         logger.error(
@@ -20,7 +21,7 @@ const server = app.listen(port, process.env.HOST || "0.0.0.0", () => {
           "Configured historical audit failed",
         );
       });
-    }, 5000).unref();
+    }, delayMs).unref();
   }
 });
 for (const signal of ["SIGTERM", "SIGINT"] as const) {
