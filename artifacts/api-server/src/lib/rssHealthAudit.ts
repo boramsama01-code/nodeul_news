@@ -1,15 +1,16 @@
-import Parser from "rss-parser";
 import { NEWS_SOURCES } from "./rssFeedList";
 import { mapInPacedBatches } from "./crawlPacing";
 import { parseRssPublishedAt } from "./crawlRuntime";
 import { logger } from "./logger";
 import { writeState } from "./persistentState";
-
-const parser = new Parser({ timeout: 15_000, maxRedirects: 5 });
+import { loadOfficialRssFeed, type FeedParseMode } from "./rssTransport";
 
 export interface RssHealthItem {
   name: string;
   url: string;
+  resolvedUrl?: string;
+  parseMode?: FeedParseMode;
+  discovered?: boolean;
   status: "ok" | "empty" | "error";
   itemCount: number;
   newest?: string;
@@ -22,6 +23,8 @@ export async function auditDirectRssFeeds(): Promise<{
   ok: number;
   empty: number;
   failed: number;
+  discovered: number;
+  repaired: number;
   items: RssHealthItem[];
 }> {
   const unique = new Map<string, { name: string; url: string }>();
@@ -35,15 +38,18 @@ export async function auditDirectRssFeeds(): Promise<{
     [...unique.values()],
     async (source): Promise<RssHealthItem> => {
       try {
-        const feed = await parser.parseURL(source.url);
-        const dates = (feed.items ?? [])
+        const loaded = await loadOfficialRssFeed(source.url);
+        const dates = (loaded.feed.items ?? [])
           .map(parseRssPublishedAt)
           .filter((value): value is Date => !!value)
           .sort((a, b) => a.getTime() - b.getTime());
         return {
           ...source,
-          status: (feed.items?.length ?? 0) > 0 ? "ok" : "empty",
-          itemCount: feed.items?.length ?? 0,
+          resolvedUrl: loaded.resolvedUrl,
+          parseMode: loaded.parseMode,
+          discovered: loaded.discovered,
+          status: (loaded.feed.items?.length ?? 0) > 0 ? "ok" : "empty",
+          itemCount: loaded.feed.items?.length ?? 0,
           oldest: dates[0]?.toISOString(),
           newest: dates[dates.length - 1]?.toISOString(),
         };
@@ -56,7 +62,7 @@ export async function auditDirectRssFeeds(): Promise<{
         };
       }
     },
-    { batchSize: 4, concurrency: 2, pauseMinMs: 1800, pauseMaxMs: 3400 },
+    { batchSize: 3, concurrency: 2, pauseMinMs: 2000, pauseMaxMs: 3800 },
   );
 
   const report = {
@@ -64,18 +70,39 @@ export async function auditDirectRssFeeds(): Promise<{
     ok: items.filter((item) => item.status === "ok").length,
     empty: items.filter((item) => item.status === "empty").length,
     failed: items.filter((item) => item.status === "error").length,
+    discovered: items.filter((item) => item.discovered).length,
+    repaired: items.filter((item) => item.parseMode === "sanitized-xml" || item.parseMode === "tolerant-xml").length,
     items,
   };
   try { await writeState("rss-health-audit-latest", report); }
   catch { /* local deployments may not use app_state */ }
   logger.info(
-    { checked: items.length, ok: report.ok, empty: report.empty, failed: report.failed },
+    {
+      checked: items.length,
+      ok: report.ok,
+      empty: report.empty,
+      failed: report.failed,
+      discovered: report.discovered,
+      repaired: report.repaired,
+    },
     "Direct RSS health audit complete",
   );
   for (const item of items.filter((entry) => entry.status !== "ok")) {
     logger.warn(
-      { name: item.name, url: item.url, status: item.status, error: item.error },
+      { name: item.name, url: item.url, resolvedUrl: item.resolvedUrl, status: item.status, error: item.error },
       "Direct RSS health issue",
+    );
+  }
+  for (const item of items.filter((entry) => entry.status === "ok" && (entry.discovered || entry.parseMode !== "rss-parser"))) {
+    logger.info(
+      {
+        name: item.name,
+        url: item.url,
+        resolvedUrl: item.resolvedUrl,
+        parseMode: item.parseMode,
+        itemCount: item.itemCount,
+      },
+      "Direct RSS recovered",
     );
   }
   return report;
