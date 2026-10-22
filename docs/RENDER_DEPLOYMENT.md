@@ -2,6 +2,8 @@
 
 ## 승인된 구성
 
+- Render 프로젝트 `nodeul-news` → 환경 `production`에 뉴스 웹서비스와 DB만 묶습니다. 이 구조가 대시보드의 폴더 역할을 합니다.
+- 환경의 `networking.isolation=enabled`로 다른 프로젝트와의 내부 네트워크 통신을 차단합니다. 웹과 DB는 같은 환경에 배치합니다.
 - 웹서비스 `nodeul-news`: 무료, 싱가포르, 사용자가 수집 버튼을 누를 때 웹 서버 안에서 실행.
 - `RUN_SCHEDULER=false`: 시작·재시작·절전 복귀 시 수집하지 않으며 정기 자동 수집도 실행하지 않습니다.
 - PostgreSQL `nodeul-news-db`: 무료, 싱가포르, 버전 16.
@@ -12,7 +14,7 @@
 ## 배포
 
 1. 변경 내용을 GitHub `boramsama01-code/nodeul_news`의 `main`에 반영합니다.
-2. Render의 New Blueprint에서 이 저장소를 선택합니다. 이미 생성된 `nodeul-news-db`를 이름으로 연결하는지 확인합니다. 같은 이름의 DB를 중복 생성하지 않습니다.
+2. Render의 New Blueprint에서 이 저장소를 선택합니다. 변경 미리보기에서 `nodeul-news/production` 생성, 뉴스 웹서비스 신규 생성, 기존 `nodeul-news-db` 편입만 표시되는지 확인합니다. DB ID는 `dpg-dbcm9fq9lscs73ecsuhg-a`입니다. 이름에 접미사가 붙은 새 DB 생성이 표시되면 적용하지 않고 기존 DB 연결 방식을 선택합니다. `ai-mom-studio`는 변경 대상에 포함하지 않습니다.
 3. 비용이 Free이고 지역이 Singapore인지 확인 후 적용합니다. `DATABASE_URL`은 내부 연결로 자동 연결되며, `APP_PASSWORD`와 `CONFIG_ENCRYPTION_KEY`는 자동 생성됩니다.
 4. 배포가 `live`인지 확인하고 `/api/healthz`가 200인지 확인합니다. 비로그인 상태에서 `/`, `/api/articles`, `/api/settings`는 401이어야 합니다.
 5. Render 환경변수 화면에서 `APP_PASSWORD`를 확인하여 로그인합니다. 키 값을 GitHub, 대화, 로그에 붙이지 않습니다.
