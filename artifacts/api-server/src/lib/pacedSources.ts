@@ -2,7 +2,7 @@ import { NEWS_SOURCES, type NewsSource } from "./rssFeedList";
 import { crawlSource } from "./crawlerSources";
 import { crawlDateChunks, mapInPacedBatches, sleepWithJitter } from "./crawlPacing";
 import { logger } from "./logger";
-import { validateDateRange, warnSource } from "./crawlRuntime";
+import { validateDateRange } from "./crawlRuntime";
 import type { ArticleData } from "./crawlerUtils";
 
 function uniqueSources(sources: readonly NewsSource[]): NewsSource[] {
@@ -64,9 +64,9 @@ export async function crawlAllSourcesPaced(startDate: string, endDate: string): 
   }
 
   if (historical) {
-    warnSource(
-      "직접 RSS",
-      `${startDate}~${endDate}는 과거 기간이므로 최신 RSS를 같은 기간마다 반복 호출하지 않고 별도 상태 점검만 수행합니다.`,
+    logger.info(
+      { startDate, endDate },
+      "Historical interval: direct RSS is checked once by the health audit instead of being re-fetched for each old period",
     );
   } else {
     results.push(...await crawlSourceBatch(direct, startDate, endDate, 2));
