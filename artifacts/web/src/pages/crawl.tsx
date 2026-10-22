@@ -357,7 +357,7 @@ export default function Crawl() {
                   <Badge variant="outline" className="text-xs px-1.5 py-0">실행 이력에서 확인</Badge>
                 </div>
                 <div className="text-xs text-muted-foreground mt-0.5">
-                  네이버 검색 API로 "노들" 키워드의 최신 결과를 수집합니다. 검색어당 최대 1,000건이며 과거 전체 기사 조회는 보장되지 않습니다.
+                  "노들섬", "예술섬노들", "글로벌 노들 예술섬", "노들 글로벌 예술섬"을 각각 검색합니다. 검색어당 최대 1,000건이며 과거 전체 기사 조회는 보장되지 않습니다.
                 </div>
               </div>
             </div>
@@ -385,7 +385,7 @@ export default function Crawl() {
                   <Badge variant="outline" className="text-xs px-1.5 py-0">실행 이력에서 확인</Badge>
                 </div>
                 <div className="text-xs text-muted-foreground mt-0.5">
-                  연합뉴스, 조선·중앙·동아·한겨레 등 전국 주요 언론사 RSS 피드를 직접 구독. 수집 후 "노들" 키워드 필터링 적용. RSS는 최신 기사만 제공하므로 오래된 기사는 누락될 수 있습니다.
+                  전국 주요 언론사의 RSS를 수집하고, 제목·본문 요약에 지정 키워드 중 하나가 있는 기사만 저장합니다. "노들길"·"노들로" 등만 있는 기사는 제외합니다. RSS는 최신 기사만 제공하므로 오래된 기사는 누락될 수 있습니다.
                 </div>
               </div>
             </div>

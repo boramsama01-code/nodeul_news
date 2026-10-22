@@ -1,11 +1,4 @@
-// Relevance filter — "노들" 포함 기사 수집, 단 "노들장애인야학"·"노들강변" 제외
-const EXCLUDE_PATTERNS = ["노들장애인야학", "노들강변"];
-
-export function isRelevant(title: string, content: string): boolean {
-  const text = title + " " + content;
-  if (!text.includes("노들")) return false;
-  return !EXCLUDE_PATTERNS.some((e) => text.includes(e));
-}
+export { isRelevant } from "./newsRelevance";
 
 // Rule-based negative sentiment analysis (used when ANTHROPIC_API_KEY is not set)
 const NEGATIVE_KEYWORDS = [
@@ -215,19 +208,17 @@ export function extractPressName(mediaName: string): string {
   return m ? m[1] : mediaName;
 }
 
-// Deduplication check — URL-based + title+date fingerprint.
-// Google News can publish the same headline on behalf of multiple presses, so
-// its press label is part of both keys. Other sources keep the historical
-// source+URL/title+date behavior.
-function dedupSourceKey(source: string, mediaName?: string): string {
-  if (source === "google_news_rss" && mediaName?.trim()) {
-    return `${source}__${mediaName.trim().replace(/\s+/g, "")}`;
+// Each collection route is counted independently, matching UNIQUE(url, source).
+// Headline/date matching is safe only when the publisher is known as well.
+function duplicateKeys(url: string, title: string, publishedAt: Date, source: string, mediaName?: string): string[] {
+  const keys = [JSON.stringify(["url", source, url.trim()])];
+  const press = extractPressName(mediaName ?? "").replace(/\s+/g, "");
+  const unknown = !press || ["기타", "알수없음", "네이버뉴스", "네이버", "다음뉴스", "다음", "구글뉴스"].includes(press);
+  if (!unknown) {
+    const date = new Date(publishedAt.getTime() + 9 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    keys.push(JSON.stringify(["headline", source, press, title.replace(/\s+/g, ""), date]));
   }
-  return source;
-}
-
-function titleFingerprint(title: string): string {
-  return title.trim().replace(/\s+/g, "");
+  return keys;
 }
 
 export function isDuplicate(
@@ -238,15 +229,7 @@ export function isDuplicate(
   source = "",
   mediaName?: string,
 ): boolean {
-  const sourceKey = dedupSourceKey(source, mediaName);
-  const normalizedUrl = `${sourceKey}__` + url.toLowerCase().trim().replace(/\/$/, "");
-  if (existingSet.has(normalizedUrl)) return true;
-
-  const dateStr = publishedAt.toISOString().split("T")[0];
-  const fingerprint = `${sourceKey}__${titleFingerprint(title)}__${dateStr}`;
-  if (existingSet.has(fingerprint)) return true;
-
-  return false;
+  return duplicateKeys(url, title, publishedAt, source, mediaName).some(key => existingSet.has(key));
 }
 
 // Add URL and fingerprint to existing set
@@ -258,10 +241,7 @@ export function addToSet(
   source = "",
   mediaName?: string,
 ): void {
-  const sourceKey = dedupSourceKey(source, mediaName);
-  set.add(`${sourceKey}__` + url.toLowerCase().trim().replace(/\/$/, ""));
-  const dateStr = publishedAt.toISOString().split("T")[0];
-  set.add(`${sourceKey}__${titleFingerprint(title)}__${dateStr}`);
+  for (const key of duplicateKeys(url, title, publishedAt, source, mediaName)) set.add(key);
 }
 
 // Strip HTML tags

@@ -1,3 +1,5 @@
+import { GOOGLE_NEWS_QUERY } from "./newsRelevance";
+
 export type NewsSourceMethod = "rss_direct" | "google_news_rss";
 
 export interface NewsSource {
@@ -7,9 +9,9 @@ export interface NewsSource {
   domain: string;
 }
 
-export const NEWS_SOURCES: NewsSource[] = [
-  // ── 구글뉴스 RSS — "노들" 단일 쿼리로 전 언론사 수집 (최신순/관련순 두 피드) ──
-  {"name":"구글뉴스-노들(최신)","method":"google_news_rss","url":"https://news.google.com/rss/search?q=%EB%85%B8%EB%93%A4&hl=ko&gl=KR&ceid=KR:ko","domain":"news.google.com"},
+const SOURCE_DEFINITIONS: NewsSource[] = [
+  // ── 구글뉴스 RSS — 아래에서 공통 키워드와 언론사 범위를 적용 ──
+  {"name":"구글뉴스-노들섬(최신)","method":"google_news_rss","url":"https://news.google.com/rss/search?hl=ko&gl=KR&ceid=KR:ko","domain":"news.google.com"},
   // ── 주요 언론사 전체 RSS (키워드 필터링) ──
   {"name":"경향신문","method":"rss_direct","url":"https://www.khan.co.kr/rss/rssdata/total_news.xml","domain":"khan.co.kr"},
   ...["Pol", "Eco", "Soc", "Int", "Ent", "Spo", "Golf", "Life", "Tra"].map(section => ({name: "국민일보", method: "rss_direct" as const, url: `https://www.kmib.co.kr/rss/data/kmib${section}Rss.xml`, domain: "kmib.co.kr"})),
@@ -149,6 +151,15 @@ export const NEWS_SOURCES: NewsSource[] = [
   {"name":"헬로디디","method":"google_news_rss","url":"https://news.google.com/rss/search?q=%EB%85%B8%EB%93%A4%EC%84%AC+site:hellodd.com&hl=ko&gl=KR&ceid=KR:ko","domain":"hellodd.com"},
   {"name":"OBS","method":"google_news_rss","url":"https://news.google.com/rss/search?q=%EB%85%B8%EB%93%A4%EC%84%AC+site:obs.co.kr&hl=ko&gl=KR&ceid=KR:ko","domain":"obs.co.kr"},
 ];
+
+// Keep the publisher scope while using the approved search terms everywhere.
+export const NEWS_SOURCES: NewsSource[] = SOURCE_DEFINITIONS.map(source => {
+  if (source.method !== "google_news_rss") return source;
+  const url = new URL(source.url);
+  const scope = source.domain === "news.google.com" ? "" : ` site:${source.domain}`;
+  url.searchParams.set("q", `(${GOOGLE_NEWS_QUERY})${scope}`);
+  return { ...source, url: url.toString() };
+});
 
 export const RSS_DIRECT_SOURCES = NEWS_SOURCES.filter((s) => s.method === "rss_direct");
 export const GOOGLE_NEWS_SOURCES = NEWS_SOURCES.filter((s) => s.method === "google_news_rss");

@@ -13,6 +13,7 @@ import {
 } from "./crawlerUtils";
 import { analyzeArticleSentiment } from "./aiAnalysis";
 import { crawlAllSources, crawlNaverNews, crawlDaumNews, crawlNaverWebSearch } from "./crawlerSources";
+import { loadExistingArticles, refreshExcludedArticle } from "./existingArticles";
 
 export interface CrawlJobDependencies {
   db?: typeof db;
@@ -21,31 +22,6 @@ export interface CrawlJobDependencies {
   crawlNaverNews?: typeof crawlNaverNews;
   crawlDaumNews?: typeof crawlDaumNews;
   crawlNaverWebSearch?: typeof crawlNaverWebSearch;
-}
-
-async function loadExistingSet(database: typeof db): Promise<Set<string>> {
-  const existingSet = new Set<string>();
-  const existing = await database
-    .select({
-      url: articlesTable.url,
-      title: articlesTable.title,
-      publishedAt: articlesTable.publishedAt,
-      source: articlesTable.source,
-      mediaName: articlesTable.mediaName,
-    })
-    .from(articlesTable);
-
-  for (const a of existing) {
-    const src = a.source ?? "";
-    const sourceKey = src === "google_news_rss" && a.mediaName?.trim()
-      ? `${src}__${a.mediaName.trim().replace(/\s+/g, "")}`
-      : src;
-    existingSet.add(`${sourceKey}__` + a.url.toLowerCase().trim().replace(/\/$/, ""));
-    const dateStr = a.publishedAt.toISOString().split("T")[0];
-    existingSet.add(`${sourceKey}__${a.title.trim().replace(/\s+/g, "")}__${dateStr}`);
-  }
-
-  return existingSet;
 }
 
 export async function runCrawlJob(
@@ -73,9 +49,11 @@ async function executeCrawlJob(
     daum: dependencies.crawlDaumNews ?? crawlDaumNews,
     naverWeb: dependencies.crawlNaverWebSearch ?? crawlNaverWebSearch,
   };
-  const existingSet = await loadExistingSet(database);
+  const existing = await loadExistingArticles(database);
+  const { existingSet } = existing;
   let totalCollected = 0;
   let totalDuplicates = 0;
+  let totalRefreshed = 0;
   let insertFailures = 0;
   let filtered = 0;
 
@@ -124,6 +102,13 @@ async function executeCrawlJob(
 
   for (const article of articles) {
     if (!isRelevant(article.title, article.content) || !isValidUrl(article.url) || !Number.isFinite(article.publishedAt.getTime())) { filtered++; continue; }
+    try {
+      if (await refreshExcludedArticle(database, existing, article)) { totalRefreshed++; continue; }
+    } catch (err) {
+      insertFailures++;
+      logger.error({ err }, "Failed to refresh excluded article");
+      continue;
+    }
     if (isDuplicate(article.url, article.title, article.publishedAt, existingSet, article.source, article.mediaName)) {
       totalDuplicates++;
       continue;
@@ -186,9 +171,9 @@ async function executeCrawlJob(
       total: articles.length,
       collected: totalCollected,
       duplicates: totalDuplicates,
-      error: [sourceCounts, `필터 제외 ${filtered}, 저장 실패 ${insertFailures}`, ...(crawlWarnings.getStore() ?? [])].join("\n"),
+      error: [sourceCounts, `필터 제외 ${filtered}, 기존 기사 내용 갱신 ${totalRefreshed}, 저장 실패 ${insertFailures}`, ...(crawlWarnings.getStore() ?? [])].join("\n"),
     })
     .where(eq(crawlJobsTable.id, jobId));
 
-  logger.info({ jobId, totalCollected, totalDuplicates }, "Crawl job complete");
+  logger.info({ jobId, totalCollected, totalDuplicates, totalRefreshed }, "Crawl job complete");
 }

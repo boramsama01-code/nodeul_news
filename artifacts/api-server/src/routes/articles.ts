@@ -25,6 +25,8 @@ import {
 import { analyzeArticleSentiment } from "../lib/aiAnalysis";
 import { logger } from "../lib/logger";
 import ExcelJS from "exceljs";
+import { relevantArticleCondition } from "../lib/articleRelevance";
+import { isRelevant } from "../lib/newsRelevance";
 
 const router: IRouter = Router();
 
@@ -39,7 +41,7 @@ router.get("/articles", async (req, res): Promise<void> => {
   const { year, month, keyword, isNegative, isSelfPR, page = 1, limit = 20 } = parsed.data;
   const offset = (page - 1) * limit;
 
-  const conditions = [isNull(articlesTable.deletedAt)];
+  const conditions = [isNull(articlesTable.deletedAt), relevantArticleCondition()];
 
   if (year != null) {
     conditions.push(
@@ -136,6 +138,10 @@ router.post("/articles", async (req, res): Promise<void> => {
   }
 
   const data = parsed.data;
+  if (!isRelevant(data.title, data.content ?? "")) {
+    res.status(400).json({ error: "제목 또는 본문에 노들섬, 예술섬노들, 글로벌 노들 예술섬, 노들 글로벌 예술섬 중 하나가 포함되어야 합니다." });
+    return;
+  }
   const publishedAt = new Date(data.publishedAt);
   if (isNaN(publishedAt.getTime())) {
     res.status(400).json({ error: "Invalid publishedAt date" });
@@ -285,7 +291,7 @@ router.post("/articles/:id/analyze", async (req, res): Promise<void> => {
 router.get("/articles/export", async (req, res): Promise<void> => {
   const { startDate, endDate } = req.query as { startDate?: string; endDate?: string };
 
-  const conditions = [isNull(articlesTable.deletedAt)];
+  const conditions = [isNull(articlesTable.deletedAt), relevantArticleCondition()];
   if (startDate) {
     conditions.push(gte(articlesTable.publishedAt, new Date(startDate + "T00:00:00+09:00")));
   }

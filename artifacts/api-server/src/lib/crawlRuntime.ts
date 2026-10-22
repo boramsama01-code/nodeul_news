@@ -1,5 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { logger } from "./logger";
+import { GOOGLE_NEWS_QUERY } from "./newsRelevance";
 
 export const crawlWarnings = new AsyncLocalStorage<string[]>();
 export function warnSource(source: string, message: string): void {
@@ -28,7 +29,7 @@ export function validateDateRange(start: string, end: string): void {
 export function googleFeedUrl(raw: string, start: string, end: string): string {
   const url = new URL(raw);
   // Widen the search boundaries; exact filtering uses the item's KST timestamp.
-  url.searchParams.set("q", `${url.searchParams.get("q") || "노들"} after:${shiftDate(start, -1)} before:${shiftDate(end, 1)}`);
+  url.searchParams.set("q", `${url.searchParams.get("q") || `(${GOOGLE_NEWS_QUERY})`} after:${shiftDate(start, -1)} before:${shiftDate(end, 1)}`);
   return url.toString();
 }
 

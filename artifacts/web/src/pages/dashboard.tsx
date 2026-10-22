@@ -116,7 +116,7 @@ export default function Dashboard() {
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
           <h2 className="text-2xl font-bold tracking-tight">노들섬 언론 모니터링</h2>
-          <p className="text-sm text-muted-foreground mt-0.5">언론 보도 현황 및 전년 대비 동향</p>
+          <p className="text-sm text-muted-foreground mt-0.5">노들섬 · 예술섬노들 · 글로벌 노들 예술섬 · 노들 글로벌 예술섬 포함 기사만 집계합니다. 수집 경로가 다르면 각각 1건으로 셉니다.</p>
         </div>
         <Select value={String(selectedYear)} onValueChange={(v) => setSelectedYear(Number(v))}>
           <SelectTrigger className="w-28 h-9 font-medium">
@@ -133,14 +133,14 @@ export default function Dashboard() {
       {/* KPI Cards */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         <KpiCard
-          title="총 보도 건수"
+          title={`${selectedYear}년 보도 건수`}
           value={summary?.totalArticles}
           prev={prevSummary?.totalArticles}
           loading={loadingSummary}
           icon={<Newspaper className="w-4 h-4" />}
           color="blue"
           sub={summary && summary.totalAllTime !== summary.totalArticles
-            ? `DB 전체 누적 ${summary.totalAllTime.toLocaleString()}건`
+            ? `전체 연도 원본 ${summary.totalAllTime.toLocaleString()}건 (키워드 제외분 포함)`
             : undefined}
         />
         <KpiCard

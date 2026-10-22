@@ -1,8 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import axios from "axios";
+import Parser from "rss-parser";
 import { googleFeedUrl, kstDate, mapConcurrent, validateDateRange } from "./crawlRuntime";
-import { crawlNaverNews, parseNaverDateText } from "./crawlerSources";
+import { crawlDaumNews, crawlNaverNews, crawlNaverWebSearch, crawlSource, parseNaverDateText } from "./crawlerSources";
+import { COLLECTION_KEYWORDS, GOOGLE_NEWS_QUERY } from "./newsRelevance";
+import { GOOGLE_NEWS_SOURCES } from "./rssFeedList";
 
 test("relative publication times use Korean calendar days, including midnight", () => {
   const now = new Date("2026-09-10T15:10:00Z");
@@ -20,9 +23,28 @@ test("invalid and reversed dates fail before starting network requests", () => {
 });
 
 test("Google query includes the requested historical interval and press filter", () => {
-  const url = new URL(googleFeedUrl("https://news.google.com/rss/search?q=노들+site:example.com&hl=ko", "2026-01-01", "2026-01-31"));
-  assert.equal(url.searchParams.get("q"), "노들 site:example.com after:2025-12-31 before:2026-02-01");
-  assert.equal(url.searchParams.get("hl"), "ko");
+  for (const source of GOOGLE_NEWS_SOURCES) {
+    const url = new URL(googleFeedUrl(source.url, "2026-01-01", "2026-01-31"));
+    const scope = source.domain === "news.google.com" ? "" : ` site:${source.domain}`;
+    assert.equal(url.searchParams.get("q"), `(${GOOGLE_NEWS_QUERY})${scope} after:2025-12-31 before:2026-02-01`);
+    assert.equal(url.searchParams.get("hl"), "ko");
+  }
+});
+
+test("Google and direct RSS reject related road names and retain each approved term", async () => {
+  const previousParse = Parser.prototype.parseURL;
+  Parser.prototype.parseURL = (async () => ({ items: [
+    ...COLLECTION_KEYWORDS.map((keyword, index) => ({title:`${keyword} 행사`, link:`https://example.com/${index}`, pubDate:"2026-01-10T03:00:00Z"})),
+    {title:"노들길 통제와 노들로 교통", link:"https://example.com/road", pubDate:"2026-01-10T03:00:00Z"},
+  ] })) as typeof Parser.prototype.parseURL;
+  try {
+    for (const method of ["google_news_rss", "rss_direct"] as const) {
+      const articles = await crawlSource({name:"시험 언론사", method, url:"https://example.com/rss", domain:"example.com"}, "2026-01-01", "2026-01-31");
+      assert.equal(articles.length, COLLECTION_KEYWORDS.length);
+      assert.ok(articles.every(article => article.source === method));
+      assert.ok(articles.every(article => !article.url.endsWith("/road")));
+    }
+  } finally { Parser.prototype.parseURL = previousParse; }
 });
 
 test("RSS requests never exceed the concurrency limit", async () => {
@@ -37,27 +59,56 @@ test("RSS requests never exceed the concurrency limit", async () => {
   assert.deepEqual(result, [2,4,6,8,10,12]);
 });
 
-test("multi-month Naver request fetches the API once, without pretending dates bypass its cap", async () => {
+test("multi-month Naver request fetches each keyword once without pretending dates bypass its cap", async () => {
   const previousGet = axios.get;
   const previousId = process.env.NAVER_CLIENT_ID;
   const previousSecret = process.env.NAVER_CLIENT_SECRET;
   process.env.NAVER_CLIENT_ID = "test";
   process.env.NAVER_CLIENT_SECRET = "test";
-  let calls = 0;
-  axios.get = (async (_url: string, config: {params: {start: number}}) => {
-    calls++;
+  const queries: string[] = [];
+  axios.get = (async (_url: string, config: {params: {start: number; query: string}}) => {
+    queries.push(config.params.query);
     assert.equal(config.params.start, 1);
-    return { data: { items: [{ title:"노들섬 행사", description:"노들섬", originallink:"https://example.com/news", pubDate:"2026-08-01T03:00:00Z" }] } };
+    return { data: { items: [
+      { title:`${config.params.query} 행사`, description:"행사 소식", originallink:`https://example.com/news/${queries.length}`, pubDate:"2026-08-01T03:00:00Z" },
+      { title:"노들길 교통", description:"노들로 공사", originallink:"https://example.com/road", pubDate:"2026-08-01T03:00:00Z" },
+    ] } };
   }) as typeof axios.get;
   try {
     const articles = await crawlNaverNews("2026-01-01", "2026-09-11");
-    assert.equal(calls, 1);
-    assert.equal(articles.length, 1);
+    assert.deepEqual(queries, [...COLLECTION_KEYWORDS]);
+    assert.equal(articles.length, COLLECTION_KEYWORDS.length);
   } finally {
     axios.get = previousGet;
     if (previousId === undefined) delete process.env.NAVER_CLIENT_ID; else process.env.NAVER_CLIENT_ID = previousId;
     if (previousSecret === undefined) delete process.env.NAVER_CLIENT_SECRET; else process.env.NAVER_CLIENT_SECRET = previousSecret;
   }
+});
+
+test("portal pagination can accept a later relevant snippet for a previously rejected URL", async () => {
+  const previousGet = axios.get;
+  const pageCalls = { daum: 0, naver: 0 };
+  axios.get = (async (url: string, config: {params: {q?: string; query?: string; page?: number; start?: number}}) => {
+    if ((config.params.q ?? config.params.query) !== COLLECTION_KEYWORDS[0]) {
+      return { data: "검색결과가 없습니다" };
+    }
+    const daum = url.includes("daum.net");
+    pageCalls[daum ? "daum" : "naver"]++;
+    const page = daum ? config.params.page : config.params.start;
+    const snippet = page === 1 ? "노들길 교통 안내" : "노들섬 행사 안내";
+    return { data: daum
+      ? `<li><div class="item-bundle-mid"><div class="item-title"><strong><a href="https://v.daum.net/v/20260110120000123">행사 안내</a></strong></div><div class="item-contents"><span class="conts-desc">${snippet}</span></div></div></li>`
+      : `<div>2026.01.10.</div><a data-heatmap-target=".tit" href="https://example.com/news">행사 안내</a><a data-heatmap-target=".body" href="https://example.com/news">${snippet}</a>` };
+  }) as typeof axios.get;
+  try {
+    const daum = await crawlDaumNews("2026-01-01", "2026-01-31");
+    const naver = await crawlNaverWebSearch("2026-01-01", "2026-01-31");
+    assert.equal(daum.length, 1);
+    assert.equal(naver.length, 1);
+    assert.equal(daum[0].content, "노들섬 행사 안내");
+    assert.equal(naver[0].content, "노들섬 행사 안내");
+    assert.deepEqual(pageCalls, { daum: 3, naver: 3 });
+  } finally { axios.get = previousGet; }
 });
 
 test("restart catches up after downtime and overlaps recent days", async () => {
