@@ -2,6 +2,7 @@ import app from "./app";
 import { logger } from "./lib/logger";
 import { loadRuntimeConfig } from "./lib/configStore";
 import { startScheduler } from "./lib/scheduler";
+import { startConfiguredHistoricalAudit } from "./lib/historicalAudit";
 import { pool } from "@workspace/db";
 
 await loadRuntimeConfig();
@@ -11,6 +12,16 @@ let stopScheduler: (() => void) | undefined;
 const server = app.listen(port, process.env.HOST || "0.0.0.0", () => {
   logger.info({ port }, "Server listening");
   if (process.env.RUN_SCHEDULER === "true") stopScheduler = startScheduler();
+  if (process.env.AUTO_AUDIT_START_DATE) {
+    setTimeout(() => {
+      void startConfiguredHistoricalAudit().catch((error) => {
+        logger.error(
+          { error: error instanceof Error ? error.message : String(error) },
+          "Configured historical audit failed",
+        );
+      });
+    }, 5000).unref();
+  }
 });
 for (const signal of ["SIGTERM", "SIGINT"] as const) {
   process.once(signal, () => {
