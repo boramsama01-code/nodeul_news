@@ -1,5 +1,7 @@
 # 노들섬 뉴스 모니터 — 독립 실행 안내
 
+Render 무료 시험 배포는 [배포 안내](docs/RENDER_DEPLOYMENT.md)를 참고하세요. 아래 Windows 검증 기록은 당시 결과이며 현재 배포 상태와 구분합니다.
+
 ## Windows 실행
 
 Windows 64비트용 `Nodeul-News-Windows.zip`을 원하는 폴더에 압축 해제한 뒤 **start-desktop.cmd**를 더블클릭하세요. Node.js·PostgreSQL이 포함되어 있어 Docker나 Replit 설치가 필요 없습니다. 처음 실행하면 데이터베이스를 준비하고 GitHub 저장소에 있던 기사 백업을 한 번 가져옵니다. 브라우저에서 `http://localhost:8080`이 열립니다.
@@ -46,7 +48,7 @@ Windows 64비트용 `Nodeul-News-Windows.zip`을 원하는 폴더에 압축 해�
 
 ## 개발용 소스 / 이후 서버 이전
 
-소스 ZIP은 실행 바이너리가 아닌 개발용입니다. Node.js 22 이상과 pnpm 11.19.0을 사용합니다. `pnpm install --frozen-lockfile`, `pnpm typecheck`, `pnpm test`, `pnpm build:standalone`으로 검증·빌드합니다.
+소스 ZIP은 실행 바이너리가 아닌 개발용입니다. Node.js 22 이상과 pnpm 11.25.0을 사용합니다. `pnpm install --frozen-lockfile`, `pnpm typecheck`, `pnpm test`, `pnpm build:standalone`으로 검증·빌드합니다.
 
 서버에서는 `.env.example`을 `.env`로 복사하고 비밀번호·네이버 키를 입력한 뒤 `docker compose up -d --build`로 웹·수집·DB를 실행할 수 있습니다. DB 비밀번호는 영문·숫자로 된 긴 무작위 값을 사용하세요. 기본 접속 주소는 서버 내부의 127.0.0.1:8080이며 DB는 외부에 공개하지 않습니다. 공용 접속에는 HTTPS와 APP_PASSWORD 설정이 필요합니다. Docker 실행 자체는 이번 Windows 환경에 Docker가 없어 검증하지 못했습니다.
 

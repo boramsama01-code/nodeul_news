@@ -5,8 +5,13 @@ import router from "./routes";
 import { logger } from "./lib/logger";
 import path from "node:path";
 import { timingSafeEqual } from "node:crypto";
+import { pool } from "@workspace/db";
 
 const app: Express = express();
+app.disable("x-powered-by");
+if (process.env.RENDER === "true" && !process.env.APP_PASSWORD) {
+  throw new Error("APP_PASSWORD is required on Render.");
+}
 
 app.use(
   pinoHttp({
@@ -27,7 +32,18 @@ app.use(
     },
   }),
 );
+// Render must be able to check readiness without access to application data.
+app.get("/api/healthz", async (_req, res) => {
+  res.setHeader("Cache-Control", "no-store");
+  try {
+    const healthQuery = { text: "SELECT 1", query_timeout: 1000 };
+    await pool.query(healthQuery);
+    res.json({ status: "ok" });
+  } catch { res.status(503).json({ status: "unavailable" }); }
+});
 app.use((req, res, next) => {
+  res.setHeader("X-Robots-Tag", "noindex, nofollow");
+  res.setHeader("Cache-Control", "no-store");
   const origin = req.headers.origin;
   if (origin) {
     let sameOrigin = false;
@@ -61,5 +77,10 @@ if (process.env.WEB_DIST) {
   app.use(express.static(directory));
   app.get("/{*path}", (_req, res) => { res.sendFile(path.join(directory, "index.html")); });
 }
+
+app.use((_err: Error, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+  logger.error("Request failed; no request secrets were logged.");
+  res.status(500).json({ error: "처리하지 못했습니다. 잠시 후 다시 시도해 주세요." });
+});
 
 export default app;

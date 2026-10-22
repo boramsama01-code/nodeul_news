@@ -7,6 +7,7 @@ import { runCrawlJob } from "./crawlOrchestrator";
 import { kstDate, shiftDate, validateDateRange } from "./crawlRuntime";
 import { logger } from "./logger";
 import { loadRuntimeConfig } from "./configStore";
+import { readState, writeState, usesDatabaseState } from "./persistentState";
 
 const statePath = () => path.resolve(process.env.DATA_DIR || ".local", "scheduler.json");
 export function catchUpRange(now: Date, lastSuccess?: string) {
@@ -17,10 +18,15 @@ export function catchUpRange(now: Date, lastSuccess?: string) {
 }
 
 export async function collectOnce(start?: string, end?: string): Promise<boolean> {
-  loadRuntimeConfig();
+  await loadRuntimeConfig();
   let lastSuccess: string | undefined;
-  try { lastSuccess = JSON.parse(await readFile(statePath(), "utf8")).lastSuccess; }
+  try {
+    lastSuccess = usesDatabaseState()
+      ? (await readState<{ lastSuccess: string }>("scheduler"))?.lastSuccess
+      : JSON.parse(await readFile(statePath(), "utf8")).lastSuccess;
+  }
   catch (err) {
+    if (usesDatabaseState()) throw new Error("Could not read the persisted collection checkpoint.");
     if ((err as NodeJS.ErrnoException).code !== "ENOENT") logger.warn("Could not read scheduler checkpoint; using recent date range");
   }
   if (lastSuccess && !Number.isFinite(new Date(lastSuccess).getTime())) lastSuccess = undefined;
@@ -34,10 +40,14 @@ export async function collectOnce(start?: string, end?: string): Promise<boolean
     const [job] = await db.select().from(crawlJobsTable).where(eq(crawlJobsTable.id, jobId));
     if (job.status !== "done") return false;
     if (!start && !end) {
-      await mkdir(path.dirname(statePath()), { recursive: true });
-      const temporary = `${statePath()}.${jobId}.tmp`;
-      await writeFile(temporary, JSON.stringify({ lastSuccess: began.toISOString(), jobId, range }, null, 2));
-      await rename(temporary, statePath());
+      const checkpoint = { lastSuccess: began.toISOString(), jobId, range };
+      if (usesDatabaseState()) await writeState("scheduler", checkpoint);
+      else {
+        await mkdir(path.dirname(statePath()), { recursive: true });
+        const temporary = `${statePath()}.${jobId}.tmp`;
+        await writeFile(temporary, JSON.stringify(checkpoint, null, 2));
+        await rename(temporary, statePath());
+      }
     }
     return true;
   } catch (err) {
@@ -47,14 +57,18 @@ export async function collectOnce(start?: string, end?: string): Promise<boolean
   }
 }
 
-export function startScheduler(): void {
+export function startScheduler(): () => void {
   const minutes = Number(process.env.CRAWL_INTERVAL_MINUTES || 30);
   if (!Number.isFinite(minutes) || minutes < 5 || minutes > 1440) throw new Error("CRAWL_INTERVAL_MINUTES must be between 5 and 1440");
+  let stopped = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
   const tick = async () => {
+    if (stopped) return;
     try { await collectOnce(); }
     catch (err) { logger.error({ message: String(err) }, "Scheduler run failed; retrying next interval"); }
-    setTimeout(tick, minutes * 60_000);
+    if (!stopped) timer = setTimeout(tick, minutes * 60_000);
   };
   logger.info({ minutes }, "Independent scheduler starting");
   void tick();
+  return () => { stopped = true; if (timer) clearTimeout(timer); };
 }

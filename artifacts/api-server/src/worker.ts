@@ -2,7 +2,7 @@ import { pool } from "@workspace/db";
 import { loadRuntimeConfig } from "./lib/configStore";
 import { collectOnce, startScheduler } from "./lib/scheduler";
 
-loadRuntimeConfig();
+await loadRuntimeConfig();
 if (process.argv.includes("--once")) {
   const index = process.argv.indexOf("--once");
   const [start, end] = process.argv.slice(index + 1);

@@ -1,6 +1,6 @@
 FROM node:22-bookworm-slim AS build
 WORKDIR /app
-RUN npm install --global pnpm@11.19.0
+RUN npm install --global pnpm@11.25.0
 COPY . .
 RUN pnpm install --frozen-lockfile
 RUN pnpm build:standalone
