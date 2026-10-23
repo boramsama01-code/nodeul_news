@@ -73,7 +73,7 @@ async function executeCrawlJob(
   logger.info({ jobId }, "Starting paced crawl: Naver API + Daum API + RSS sources");
 
   const [naverApiRes, naverWebRes, daumRes, rssRes] = await settleSequentially([
-    () => dependencies.crawlNaverNews || Date.now() - Date.parse(`${endDate}T23:59:59+09:00`) <= 21 * 86400_000 ? crawlSources.naver(startDate, endDate) : Promise.resolve([] as ArticleData[]),
+    () => crawlSources.naver(startDate, endDate),
     () => dependencies.db || dependencies.reviewOnly ? crawlSources.naverWeb(startDate, endDate) : crawlDateChunks("네이버 웹", crawlSources.naverWeb, startDate, endDate),
     () => dependencies.db || dependencies.reviewOnly ? crawlSources.daum(startDate, endDate) : crawlDateChunks("다음", crawlSources.daum, startDate, endDate),
     () => crawlSources.all(startDate, endDate),

@@ -363,8 +363,12 @@ router.get("/articles/export", async (req, res): Promise<void> => {
       isSelfPR: a.isSelfPR ? "예" : "",
       source: a.source,
     });
-    row.getCell("url").value = { text: a.url, hyperlink: a.url } as ExcelJS.CellHyperlinkValue;
-    row.getCell("url").font = { color: { argb: "FF0070C0" }, underline: true };
+    if (/^https?:\/\//i.test(a.url)) {
+      row.getCell("url").value = { text: a.url, hyperlink: a.url } as ExcelJS.CellHyperlinkValue;
+      row.getCell("url").font = { color: { argb: "FF0070C0" }, underline: true };
+    } else {
+      row.getCell("url").value = a.url;
+    }
     if (a.isNegative) {
       row.getCell("isNegative").font = { color: { argb: "FFFF0000" }, bold: true };
     }

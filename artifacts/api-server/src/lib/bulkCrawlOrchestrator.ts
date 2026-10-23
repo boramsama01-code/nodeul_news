@@ -112,6 +112,19 @@ async function executeBulkCrawlJob(
     return analysis;
   };
 
+  let naverApiAll: ArticleData[] = [];
+  if (!dependencies.db || dependencies.crawlNaverNews) {
+    await database.update(crawlJobsTable).set({ currentSource: "네이버 공식 API 최신 1,000건 범위 확인 중…", progress: 2 }).where(eq(crawlJobsTable.id, jobId));
+    try {
+      // The official API has no date parameter. Fetch its bounded result set
+      // once for the entire job, then assign accepted rows to each month.
+      naverApiAll = await crawlSources.naver(startDate, endDate);
+    } catch (error) {
+      logger.error({ error, jobId }, "Naver API crawl failed for bulk range");
+      warnSource("네이버 API", "대량 수집의 공식 API 확인 실패");
+    }
+  }
+
   for (let i = 0; i < months.length; i++) {
     const month = months[i]!;
     const monthProgress = Math.round((i / totalMonths) * 90);
@@ -128,19 +141,20 @@ async function executeBulkCrawlJob(
 
     logger.info({ jobId, month: month.label, start: month.start, end: month.end }, "Bulk crawl: processing month");
 
-    const [naverApiRes, naverWebRes, daumRes, rssRes] = await settleSequentially([
-      async () => [] as ArticleData[], // naver_api 제외: start<=1000 제약으로 과거 수집 불가, naver_web으로 대체
+    const naverApiResults = naverApiAll.filter((article) => {
+      const day = new Date(article.publishedAt.getTime() + 9 * 3600_000).toISOString().slice(0, 10);
+      return day >= month.start && day <= month.end;
+    });
+    const [naverWebRes, daumRes, rssRes] = await settleSequentially([
       () => dependencies.db ? crawlSources.naverWeb(month.start, month.end) : crawlDateChunks("네이버 웹", crawlSources.naverWeb, month.start, month.end),
       () => dependencies.db ? crawlSources.daum(month.start, month.end) : crawlDateChunks("다음", crawlSources.daum, month.start, month.end),
       () => crawlSources.all(month.start, month.end),
     ], dependencies.db ? 0 : 2000);
 
-    const naverApiResults = naverApiRes.status === "fulfilled" ? naverApiRes.value : [];
     const naverWebResults = naverWebRes.status === "fulfilled" ? naverWebRes.value : [];
     const daumResults     = daumRes.status     === "fulfilled" ? daumRes.value     : [];
     const rssResults      = rssRes.status      === "fulfilled" ? rssRes.value      : [];
 
-    if (naverApiRes.status === "rejected") logger.error({ err: naverApiRes.reason, jobId, month: month.label }, "Naver API crawl failed for month");
     if (naverWebRes.status === "rejected") logger.error({ err: naverWebRes.reason, jobId, month: month.label }, "Naver web crawl failed for month");
     if (daumRes.status     === "rejected") logger.error({ err: daumRes.reason,     jobId, month: month.label }, "Daum crawl failed for month");
     if (rssRes.status      === "rejected") logger.error({ err: rssRes.reason,      jobId, month: month.label }, "RSS crawl failed for month");
@@ -149,7 +163,7 @@ async function executeBulkCrawlJob(
     const enrich = dependencies.enrichArticles ?? (dependencies.db ? async (items: ArticleData[]) => items : enrichArticles);
     const articles = await enrich(rawArticles, { maxRequests: 180 });
     candidates += articles.length;
-    monthSummaries.push(`${month.label}: 네이버웹 ${naverWebResults.length}, 다음 ${daumResults.length}, RSS·자체검색 ${rssResults.length}`);
+    monthSummaries.push(`${month.label}: 네이버API ${naverApiResults.length}, 네이버웹 ${naverWebResults.length}, 다음 ${daumResults.length}, RSS·자체검색 ${rssResults.length}`);
     for (const [source, result] of [["네이버 웹", naverWebRes], ["다음", daumRes], ["RSS", rssRes]] as const) {
       if (result.status === "rejected") warnSource(source, `${month.label} 수집 실패`);
     }

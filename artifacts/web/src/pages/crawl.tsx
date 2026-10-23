@@ -25,6 +25,18 @@ interface SourceHealth {
   summary?: { publishers: number; feeds: number; normal: number; partial: number; unsupported: number };
   sources: { name: string; domain: string; method: string; status: string; reason: string; endpoint?: string; scope?: "whole" | "section"; feedCount?: number; usableFeeds?: number; itemCount?: number; newest?: string; oldest?: string; feeds?: SourceFeed[] }[];
 }
+interface ProviderState { status: string; reason: string; checkedAt: string; blockedUntil?: string }
+const providerLabel = (key: string) => key === "google_news" ? "구글뉴스"
+  : key === "naver_api" ? "네이버 공식 API"
+  : key === "naver_web" ? "네이버 뉴스 웹검색"
+  : key === "daum_web" ? "다음 뉴스 웹검색"
+  : key === "archive_mk" ? "매일경제 자체검색"
+  : key === "archive_seoul" ? "서울신문 자체검색" : key;
+function providerStatusLabel(key: string, state: ProviderState): string {
+  if (state.status === "ok") return "정상";
+  if (key === "naver_api" && state.status === "limited") return "공식 API 범위 일부 확인";
+  return state.status === "limited" ? "접근 제한" : "확인 필요";
+}
 const sourceReasons: Record<string,string> = {official_feed_available:"공식 피드 정상 응답 · 최신 기사 범위 내 수집", advertised_news_sitemap:"공식 뉴스 사이트맵으로 보완 · 최근 기사 범위만 지원", recovered_official_feed:"공식 페이지에서 대체 피드를 발견해 복구", missing_publication_dates:"발행일 누락 · 기간 판정이 어려워 포털 검색으로 보완", sitemap_found_without_titles_and_publication_dates:"사이트맵은 있으나 기사 제목·발행일이 없어 직접 수집 제한", no_usable_official_feed:"제한된 점검 안에서 사용 가능한 공식 피드를 찾지 못함", legacy_report_without_support_level:"이전 점검 결과라 지원 수준 미기록 · 다음 점검 후 확정"};
 const supportLabel = (status: string) => status === "normal" ? "정상" : status === "partial" ? "부분지원" : "미지원 / 현재 확인 실패";
 const kstDate = (value?: string) => value ? new Date(value).toLocaleDateString("ko-KR", { timeZone: "Asia/Seoul" }) : "";
@@ -52,7 +64,7 @@ function getCrawlStartErrorMessage(error: unknown): string {
 
 export default function Crawl() {
   const { toast } = useToast();
-  const {data:providerHealth}=useQuery<Record<string,{status:string;reason:string;checkedAt:string;blockedUntil?:string}>>({queryKey:['provider-health'],queryFn:async()=>{const r=await fetch('/api/crawl/provider-health');if(!r.ok)throw new Error('연결 상태 조회 실패');return r.json();}});
+  const {data:providerHealth}=useQuery<Record<string,ProviderState>>({queryKey:['provider-health'],queryFn:async()=>{const r=await fetch('/api/crawl/provider-health');if(!r.ok)throw new Error('연결 상태 조회 실패');return r.json();}});
   const { data: sourceHealth } = useQuery<SourceHealth>({
     queryKey: ["source-health"],
     queryFn: async () => {
@@ -96,6 +108,7 @@ export default function Crawl() {
   const [activeMode, setActiveMode] = useState<JobMode>("manual");
   const [showCompletionModal, setShowCompletionModal] = useState(false);
   const [finalStats, setFinalStats] = useState<{ collected: number; duplicates: number; total: number } | null>(null);
+  const [probePending, setProbePending] = useState<string | null>(null);
 
   const startCrawl = useStartCrawl();
   const startBulkCrawl = useStartBulkCrawl();
@@ -187,6 +200,24 @@ export default function Crawl() {
     );
   };
 
+  const probeProvider = async (provider: "naver_web" | "daum_web") => {
+    setProbePending(provider);
+    try {
+      const response = await fetch("/api/crawl/provider-probe", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ provider }),
+      });
+      ensureAuthorized(response);
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || "접근 상태를 확인하지 못했습니다.");
+      await queryClient.invalidateQueries({ queryKey: ["provider-health"] });
+      toast({ title: result.ok ? "접근 가능" : "접근 제한 유지", description: result.reason, variant: result.ok ? "default" : "destructive" });
+    } catch (error) {
+      toast({ title: "접근 재확인 실패", description: error instanceof Error ? error.message : String(error), variant: "destructive" });
+    } finally { setProbePending(null); }
+  };
+
   const isRunning = alternativePending || activeJobId !== null || startCrawl.isPending || startBulkCrawl.isPending;
   const currentSource = jobStatus?.currentSource || "";
 
@@ -203,7 +234,7 @@ export default function Crawl() {
     <div className="space-y-6 max-w-2xl mx-auto">
       <div>
         <h2 className="text-2xl font-bold tracking-tight">데이터 수집</h2>
-        <p className="text-sm text-muted-foreground mt-0.5">네이버 API · 다음 웹 검색 · 구글뉴스 · 언론사 RSS에서 관련 기사를 수집합니다.</p>
+        <p className="text-sm text-muted-foreground mt-0.5">네이버 공식 API · 포털 웹검색 · 구글뉴스 · 언론사 RSS를 함께 확인하고, 막힌 기간은 URL·빅카인즈 가져오기로 보완합니다.</p>
       </div>
 
       <div className="flex items-start gap-2.5 p-3.5 rounded-lg bg-accent/60 border border-accent text-accent-foreground text-sm">
@@ -243,7 +274,32 @@ export default function Crawl() {
           toast({title: '대기 후보 재확인 시작', description: '선택한 기간의 재시도 가능한 후보를 확인합니다.'});
         } catch (error) { toast({title: '재확인 시작 실패', description: error instanceof Error ? error.message : String(error), variant: 'destructive'}); }
       }} />
-      {providerHealth && Object.keys(providerHealth).length>0 && <Card><CardHeader><CardTitle>검색 수집처 연결 상태</CardTitle><CardDescription>실제 응답으로 확인한 최근 상태입니다. 요청 휴식 종료는 서비스의 제한 해제를 보장하지 않습니다.</CardDescription></CardHeader><CardContent className="space-y-3">{Object.entries(providerHealth).map(([key,state])=><div key={key}><strong>{key==='google_news'?'구글뉴스':key==='naver_web'?'네이버 뉴스':key==='daum_web'?'다음 뉴스':key==='archive_mk'?'매일경제 자체검색':key==='archive_seoul'?'서울신문 자체검색':key}</strong> · {state.status==='ok'?'정상':state.status==='limited'?'접근 제한':'확인 필요'}<p>{state.reason}</p><p className="text-sm text-muted-foreground">확인: {new Date(state.checkedAt).toLocaleString('ko-KR')}{state.blockedUntil && Date.parse(state.blockedUntil)>Date.now() && <> · 앱 요청 휴식: {new Date(state.blockedUntil).toLocaleString('ko-KR')}까지</>}</p></div>)}</CardContent></Card>}
+      {providerHealth && Object.keys(providerHealth).length>0 && <Card>
+        <CardHeader>
+          <CardTitle>검색 수집처 연결 상태</CardTitle>
+          <CardDescription>실제 응답으로 확인한 최근 상태입니다. 휴식 종료는 제한 해제를 뜻하지 않으며, 재확인은 검색어 1개·1일·첫 페이지만 한 번 요청합니다.</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          {Object.entries(providerHealth).map(([key,state]) => {
+            const cooling = !!state.blockedUntil && Date.parse(state.blockedUntil) > Date.now();
+            const cooldownEnded = !!state.blockedUntil && !cooling && state.status !== "ok";
+            const canProbe = key === "naver_web" || key === "daum_web";
+            return <div key={key} className="space-y-1 border-b pb-3 last:border-b-0 last:pb-0">
+              <div className="flex items-center justify-between gap-3">
+                <strong>{providerLabel(key)} · {providerStatusLabel(key, state)}</strong>
+                {canProbe && <Button size="sm" variant="outline" disabled={!!probePending || cooling} onClick={() => void probeProvider(key as "naver_web" | "daum_web")}>
+                  {probePending === key ? "확인 중…" : cooling ? "요청 휴식 중" : "최소 요청으로 재확인"}
+                </Button>}
+              </div>
+              <p>{state.reason}</p>
+              <p className="text-sm text-muted-foreground">확인: {new Date(state.checkedAt).toLocaleString('ko-KR')}
+                {cooling && <> · 앱 요청 휴식: {new Date(state.blockedUntil!).toLocaleString('ko-KR')}까지</>}
+                {cooldownEnded && <> · 요청 휴식 종료 · 현재 접근 가능 여부는 재확인 전</>}
+              </p>
+            </div>;
+          })}
+        </CardContent>
+      </Card>}
       {sourceHealth?.checkedAt && sourceHealth.sources.length > 0 && <Card>
         <CardHeader>
           <CardTitle>언론사 원문 소스 점검</CardTitle>
@@ -330,11 +386,10 @@ export default function Crawl() {
           <CardTitle className="flex items-center gap-2">
             <CalendarRange className="w-5 h-5" />
             전체 기간 대량 수집
-            <Badge variant="secondary" className="ml-1 text-xs">네이버 API 누락 보완</Badge>
+            <Badge variant="secondary" className="ml-1 text-xs">공식 API + 월별 웹 보완</Badge>
           </CardTitle>
           <CardDescription>
-            네이버 API는 검색어당 최신 1,000건까지만 조회하므로 오래된 기사가 누락될 수 있습니다.
-            월별로 나눠 순차 수집하여 더 많은 기사를 확보합니다.
+            네이버 공식 API는 전체 기간에 한 번 조회해 날짜로 분류하고, 웹검색·RSS는 월별·주별로 나눠 순차 확인합니다. API가 목표 시작일까지 닿지 못하면 상태에 범위 일부 확인으로 표시합니다.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-5">

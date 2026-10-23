@@ -211,7 +211,7 @@ async function fetchNaverNewsPage(
   display: number,
   clientId: string,
   clientSecret: string,
-): Promise<NaverNewsItem[]> {
+): Promise<NaverNewsResponse> {
   const response = await withRetry<AxiosResponse<NaverNewsResponse>>(() => axios.get<NaverNewsResponse>(
     "https://openapi.naver.com/v1/search/news.json",
     {
@@ -223,7 +223,7 @@ async function fetchNaverNewsPage(
       timeout: TIMEOUT_MS,
     },
   ));
-  return response.data.items || [];
+  return { ...response.data, items: response.data.items || [] };
 }
 
 // Split date-filtered web searches into monthly chunks. This cannot bypass the API cap.
@@ -253,24 +253,54 @@ function splitIntoMonths(startDate: string, endDate: string): Array<{ start: str
   return ranges;
 }
 
-// Fetch all pages for one query over one month-sized date range
-async function crawlNaverQueryForMonth(
+export interface NaverApiQueryCoverage {
+  query: string;
+  fetched: number;
+  accepted: number;
+  totalReported: number;
+  oldest?: string;
+  newest?: string;
+  reachedRequestedStart: boolean;
+  exhausted: boolean;
+  capped: boolean;
+  complete: boolean;
+  error?: string;
+}
+
+export interface NaverApiCoverage {
+  startDate: string;
+  endDate: string;
+  queries: NaverApiQueryCoverage[];
+}
+
+async function crawlNaverQuery(
   query: string,
   startDate: string,
   endDate: string,
   clientId: string,
   clientSecret: string,
-): Promise<ArticleData[]> {
+): Promise<{ articles: ArticleData[]; coverage: NaverApiQueryCoverage }> {
   const start = kstStart(startDate);
   const end   = kstEnd(endDate);
 
   const results: ArticleData[] = [];
   const display = 100;
+  let fetched = 0;
+  let totalReported = 0;
+  let oldest: Date | undefined;
+  let newest: Date | undefined;
+  let reachedRequestedStart = false;
+  let exhausted = false;
+  let capped = false;
+  let error: string | undefined;
 
   for (let pageStart = 1; pageStart <= 1000; pageStart += display) {
     try {
-      const items = await fetchNaverNewsPage(query, pageStart, display, clientId, clientSecret);
-      if (items.length === 0) break;
+      const response = await fetchNaverNewsPage(query, pageStart, display, clientId, clientSecret);
+      const items = response.items;
+      totalReported = Math.max(totalReported, Number(response.total || 0));
+      fetched += items.length;
+      if (items.length === 0) { exhausted = true; reachedRequestedStart = true; break; }
 
       let inRangeCount = 0;
       for (const item of items) {
@@ -282,6 +312,9 @@ async function crawlNaverQueryForMonth(
 
         const pubDate = new Date(item.pubDate);
         if (isNaN(pubDate.getTime())) continue;
+        if (!newest || pubDate > newest) newest = pubDate;
+        if (!oldest || pubDate < oldest) oldest = pubDate;
+        if (pubDate <= start) reachedRequestedStart = true;
         if (pubDate < start || pubDate > end) continue;
 
         inRangeCount++;
@@ -302,34 +335,53 @@ async function crawlNaverQueryForMonth(
       const oldestOnPage = items[items.length - 1];
       if (oldestOnPage) {
         const oldestDate = new Date(oldestOnPage.pubDate);
+        if (!isNaN(oldestDate.getTime()) && oldestDate <= start) reachedRequestedStart = true;
         if (!isNaN(oldestDate.getTime()) && oldestDate < start && inRangeCount === 0) break;
       }
 
-      if (items.length < display) break;
-      if (pageStart === 901 && new Date(items[items.length - 1].pubDate) > start) {
-        warnSource("네이버 API", "검색어별 최신 1,000건 한도 도달: 과거 기간 전체 수집을 보장할 수 없습니다.");
-      }
+      if (items.length < display) { exhausted = true; reachedRequestedStart = true; break; }
+      if (pageStart === 901) { capped = !reachedRequestedStart; break; }
       await new Promise((r) => setTimeout(r, 150));
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       const status = (err as { response?: { status?: number } })?.response?.status;
-      warnSource("네이버 API", `HTTP ${status ?? "network"}, page ${pageStart}: ${msg}`);
+      error = `HTTP ${status ?? "network"}, page ${pageStart}: ${msg}`;
+      warnSource("네이버 API", `"${query}" ${error}`);
       break;
     }
   }
 
-  return results;
+  const coverage: NaverApiQueryCoverage = {
+    query,
+    fetched,
+    accepted: results.length,
+    totalReported,
+    oldest: oldest?.toISOString(),
+    newest: newest?.toISOString(),
+    reachedRequestedStart,
+    exhausted,
+    capped,
+    complete: !error && !capped && (reachedRequestedStart || exhausted),
+    error,
+  };
+  if (capped) {
+    const oldestDay = oldest ? kstDate(oldest) : "확인 불가";
+    warnSource("네이버 API", `"${query}" 최신 1,000건의 가장 오래된 결과 ${oldestDay} · 요청 시작일 ${startDate}까지 도달하지 못해 공식 API 범위는 일부 확인입니다.`, "info");
+  }
+  return { articles: results, coverage };
 }
 
 export async function crawlNaverNews(
   startDate: string,
   endDate: string,
+  options: { onCoverage?: (coverage: NaverApiCoverage) => void } = {},
 ): Promise<ArticleData[]> {
   const clientId = process.env.NAVER_CLIENT_ID;
   const clientSecret = process.env.NAVER_CLIENT_SECRET;
 
   if (!clientId || !clientSecret) {
     warnSource("네이버 API", "NAVER_CLIENT_ID / NAVER_CLIENT_SECRET 미설정", "info");
+    await recordProviderHealth("naver_api", { status: "error", reason: "NAVER_CLIENT_ID / NAVER_CLIENT_SECRET 미설정", checkedAt: new Date().toISOString() });
     return [];
   }
 
@@ -337,13 +389,26 @@ export async function crawlNaverNews(
   // The API has no date parameter. Fetch each query once, then filter locally.
 
   const allResults: ArticleData[] = [];
-
-    for (const query of NAVER_QUERIES) {
-      const items = await crawlNaverQueryForMonth(query, startDate, endDate, clientId, clientSecret);
-      allResults.push(...items);
-    }
-
-  logger.info({ total: allResults.length }, "Naver News crawl complete");
+  const queries: NaverApiQueryCoverage[] = [];
+  for (const query of NAVER_QUERIES) {
+    const result = await crawlNaverQuery(query, startDate, endDate, clientId, clientSecret);
+    allResults.push(...result.articles);
+    queries.push(result.coverage);
+  }
+  const coverage: NaverApiCoverage = { startDate, endDate, queries };
+  options.onCoverage?.(coverage);
+  const incomplete = queries.filter((query) => !query.complete);
+  const reason = queries.map((query) => {
+    const oldest = query.oldest ? kstDate(new Date(query.oldest)) : "결과 없음";
+    return `${query.query}: ${query.complete ? "요청 시작일까지 확인" : query.capped ? "1,000건 상한" : query.error ? "요청 오류" : "일부 확인"} (가장 오래된 결과 ${oldest}, 채택 ${query.accepted}건)`;
+  }).join(" · ");
+  await recordProviderHealth("naver_api", {
+    status: incomplete.length ? "limited" : "ok",
+    reason,
+    checkedAt: new Date().toISOString(),
+    httpStatus: 200,
+  });
+  logger.info({ total: allResults.length, coverage }, "Naver News crawl complete");
   return uniqueCandidates(allResults);
 }
 

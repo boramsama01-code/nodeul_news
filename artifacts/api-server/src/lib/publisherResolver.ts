@@ -9,6 +9,7 @@ import { mkdir, open, readFile, rename, unlink } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import iconv from "iconv-lite";
 import { extractArticleText } from "./articleText";
+import { inspectArticleMetadata } from "./articleMetadata";
 import { classifyProviderResponse, readProviderHealth } from "./providerHealth";
 import { isShuttingDown } from "./lifecycle";
 import { readState, writeState, usesDatabaseState } from "./persistentState";
@@ -21,6 +22,8 @@ export interface ArticleIdentity {
   status: "resolved" | "partial" | "unresolved" | "blocked";
   articleText?: string;
   textComplete?: boolean;
+  articleTitle?: string;
+  publishedAt?: string;
 }
 interface Address { address: string; family: number }
 export interface PageResponse { status: number; headers: Record<string, string | undefined>; body: string }
@@ -406,9 +409,18 @@ export function createPublisherResolver(options: ResolverOptions = {}) {
           if (page.status < 200 || page.status >= 300) throw new Error(`HTTP ${page.status}`);
           if (page.headers["content-type"] && !/html|xml|text\//i.test(page.headers["content-type"]!)) throw new Error("non-html");
           const identity = inspectPublisherPage(page.body, url);
+          const metadata = inspectArticleMetadata(page.body);
           const body = extractArticleText(page.body);
+          value = {
+            ...value,
+            originalUrl: url,
+            publisher: identity.publisher || resolveMediaNameStrict(url) || value.publisher,
+            articleTitle: metadata.title || value.articleTitle,
+            publishedAt: metadata.publishedAt || value.publishedAt,
+            evidence: [...value.evidence, ...metadata.evidence],
+          };
           // Google relay pages are not article bodies. Naver/Daum article views are.
-          if (parsed.hostname !== "news.google.com" && body.text) value = {...value, originalUrl: url, publisher: identity.publisher || resolveMediaNameStrict(url), articleText: body.text, textComplete: body.complete, status: "partial"};
+          if (parsed.hostname !== "news.google.com" && body.text) value = {...value, articleText: body.text, textComplete: body.complete, status: "partial"};
           if (value.textComplete || (!isPortalUrl(url) && value.articleText)) return {...value, status: "resolved", evidence: ["article-page"]};
           if (identity.nextUrl) { url = identity.nextUrl; continue; }
           return {...value, evidence: [body.text ? "본문 추출 불완전" : "기사 본문을 찾지 못함"]};
