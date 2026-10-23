@@ -31,7 +31,10 @@ jobs:
       - name: Apply staged patches
         run: |
           set -euo pipefail
-          git apply --index --recount --whitespace=fix .github/manual-imports-backend.patch
+          git apply --index --recount --whitespace=fix \
+            --exclude=artifacts/api-server/src/routes/index.ts \
+            --exclude=artifacts/api-server/src/routes/crawl.ts \
+            .github/manual-imports-backend.patch
           git apply --index --recount --whitespace=fix .github/manual-imports-web.patch
       - name: Remove one-shot files
         run: git rm .github/manual-imports-backend.patch .github/manual-imports-web.patch .github/workflows/apply-manual-imports.yml
