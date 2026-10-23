@@ -12,4 +12,6 @@ export interface StatsSummary {
   selfPRCount: number;
   negativeCount: number;
   totalAllTime: number;
+  /** Distinct stored URLs in the period. The same story reached through two routes counts once only when both routes stored the same URL; this is not a count of unique articles. */
+  uniqueStoredUrls?: number;
 }

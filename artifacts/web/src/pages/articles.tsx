@@ -9,6 +9,7 @@ import {
   getGetStatYearsQueryKey,
 } from "@workspace/api-client-react";
 import { useQueryClient } from "@tanstack/react-query";
+import { ADMIN_REQUIRED_MESSAGE, ensureAuthorized } from "@/lib/admin";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -68,6 +69,7 @@ export default function Articles() {
       if (exportStart) params.set("startDate", exportStart);
       if (exportEnd) params.set("endDate", exportEnd);
       const res = await fetch(`/api/articles/export?${params.toString()}`);
+      ensureAuthorized(res);
       if (!res.ok) throw new Error("Export failed");
       const blob = await res.blob();
       const url = URL.createObjectURL(blob);
@@ -78,8 +80,8 @@ export default function Articles() {
       a.download = match ? decodeURIComponent(match[1]!) : "노들섬_언론보도.xlsx";
       a.click();
       URL.revokeObjectURL(url);
-    } catch {
-      toast({ title: "다운로드 실패", variant: "destructive" });
+    } catch (error) {
+      toast({ title: "다운로드 실패", description: error instanceof Error && error.message === ADMIN_REQUIRED_MESSAGE ? error.message : undefined, variant: "destructive" });
     } finally {
       setExporting(false);
     }

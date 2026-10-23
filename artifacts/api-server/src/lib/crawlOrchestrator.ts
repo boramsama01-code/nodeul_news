@@ -6,7 +6,7 @@ import { loadExistingArticles } from "./existingArticles";
 import { db } from "@workspace/db";
 import { articlesTable, crawlJobsTable } from "@workspace/db";
 import { eq } from "drizzle-orm";
-import { crawlWarnings, validateDateRange, warnSource } from "./crawlRuntime";
+import { crawlWarnings, decideJobStatus, validateDateRange, warnSource } from "./crawlRuntime";
 import { withCrawlLock } from "./crawlLock";
 import { logger } from "./logger";
 import {
@@ -177,10 +177,12 @@ async function executeCrawlJob(
   }
 
   await review.flush().catch(() => {});
+  const pending = review.pendingCount?.() ?? 0;
+  if (pending > 0) warnSource("원문 확인", `관련성 확인 대기 ${pending}건: 저장되지 않음`);
   await database
     .update(crawlJobsTable)
     .set({
-      status: insertFailures > 0 || (dependencies.alternative && (crawlWarnings.getStore()?.length ?? 0)>0) || (articles.length === 0 && (crawlWarnings.getStore()?.length ?? 0) > 0) ? "error" : "done",
+      status: decideJobStatus({ insertFailures, candidates: articles.length, warnings: crawlWarnings.getStore() ?? [], strict: dependencies.alternative }),
       progress: 100,
       currentSource: "",
       total: articles.length,

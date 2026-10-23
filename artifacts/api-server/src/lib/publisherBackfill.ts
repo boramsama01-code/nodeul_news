@@ -102,7 +102,8 @@ export function isUnknownPublisher(mediaName: string): boolean {
 }
 
 export function formatResolvedMediaName(existing: string, publisher: string): string {
-  const parenthesized = existing.match(/^(.+?)\((?:기타|알수없음|알 수 없음)\)$/);
+  if (/^구글뉴스-/.test(existing)) return `구글뉴스(${publisher})`;
+  const parenthesized = existing.match(/^(.+?)\((?:기타|알수없음|알 수 없음|최신|관련순|[a-z\d.-]+\.[a-z]{2,})\)$/i);
   if (parenthesized) return `${parenthesized[1]}(${publisher})`;
   if (/^네이버(뉴스)?$/i.test(existing)) return `네이버(${publisher})`;
   if (/^다음(뉴스)?$/i.test(existing)) return `다음뉴스(${publisher})`;
@@ -141,8 +142,11 @@ export async function backfillUnknownPublishers(
       `SELECT id,url,media_name FROM articles
        WHERE id > $1 AND deleted_at IS NULL
          AND published_at >= $2::date AND published_at < ($3::date + interval '1 day')
-         AND (media_name IN ('기타','알수없음','알 수 없음','네이버뉴스','다음뉴스','구글뉴스')
-              OR media_name LIKE '%(기타)' OR media_name LIKE '%(알수없음)' OR media_name LIKE '%(알 수 없음)')
+         AND (media_name IN ('기타','알수없음','알 수 없음','네이버뉴스','다음뉴스','구글뉴스','Daum','NAVER')
+              OR media_name ~ '\\((기타|알수없음|알 수 없음|최신|관련순)\\)$'
+              OR media_name LIKE '구글뉴스-%'
+              -- the same rule as unidentifiedPublisher(): a bare host name is not a publisher
+              OR media_name ~* '^([^()]*\\()?[a-z0-9-]+(\\.[a-z0-9-]+)+\\)?$')
        ORDER BY id LIMIT $4`,
       [lastId, startDate, endDate, Math.min(batchSize, maxRows - scanned)],
     );

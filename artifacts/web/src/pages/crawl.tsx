@@ -16,15 +16,31 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, Di
 import { DownloadCloud, CheckCircle2, Clock, Info, Rss, Globe, CalendarRange, Search, AlertCircle, Settings } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Link } from "wouter";
+import { ADMIN_REQUIRED_MESSAGE, ensureAuthorized, isAdminRequired } from "@/lib/admin";
 
 interface RecentJob { id: string; status: string; collected: number; duplicates: number; error: string; createdAt: string; }
-interface SourceHealth { checkedAt: string | null; sources: { name: string; domain: string; method: string; status: string; reason: string; endpoint?: string; kind?: string; itemCount?: number }[]; }
-const sourceReasons: Record<string,string> = {official_feed_available:"공식 피드 정상 응답 · 최신 기사 범위 내 수집", advertised_news_sitemap:"공식 뉴스 사이트맵으로 보완 · 최근 기사 범위만 지원", recovered_official_feed:"공식 페이지에서 대체 피드를 발견해 복구", missing_publication_dates:"발행일 누락 · 기간 판정이 어려워 포털 검색으로 보완", sitemap_found_without_titles_and_publication_dates:"사이트맵은 있으나 기사 제목·발행일이 없어 직접 수집 제한", no_usable_official_feed:"제한된 점검 안에서 사용 가능한 공식 피드를 찾지 못함"};
+interface SourceFeed { endpoint: string; kind?: string | null; status: string; reason: string; itemCount: number; newest?: string; oldest?: string }
+interface SourceHealth {
+  checkedAt: string | null;
+  summary?: { publishers: number; feeds: number; normal: number; partial: number; unsupported: number };
+  sources: { name: string; domain: string; method: string; status: string; reason: string; endpoint?: string; scope?: "whole" | "section"; feedCount?: number; usableFeeds?: number; itemCount?: number; newest?: string; oldest?: string; feeds?: SourceFeed[] }[];
+}
+const sourceReasons: Record<string,string> = {official_feed_available:"공식 피드 정상 응답 · 최신 기사 범위 내 수집", advertised_news_sitemap:"공식 뉴스 사이트맵으로 보완 · 최근 기사 범위만 지원", recovered_official_feed:"공식 페이지에서 대체 피드를 발견해 복구", missing_publication_dates:"발행일 누락 · 기간 판정이 어려워 포털 검색으로 보완", sitemap_found_without_titles_and_publication_dates:"사이트맵은 있으나 기사 제목·발행일이 없어 직접 수집 제한", no_usable_official_feed:"제한된 점검 안에서 사용 가능한 공식 피드를 찾지 못함", legacy_report_without_support_level:"이전 점검 결과라 지원 수준 미기록 · 다음 점검 후 확정"};
+const supportLabel = (status: string) => status === "normal" ? "정상" : status === "partial" ? "부분지원" : "미지원 / 현재 확인 실패";
+const kstDate = (value?: string) => value ? new Date(value).toLocaleDateString("ko-KR", { timeZone: "Asia/Seoul" }) : "";
+function describeSourceReason(reason: string): string {
+  const section = /^section_feeds:(\d+)\/(\d+)$/.exec(reason);
+  if (section) return `섹션별 피드 ${section[2]}개 중 ${section[1]}개 사용 가능 · 섹션 피드에 없는 기사는 포털 검색으로 보완`;
+  return sourceReasons[reason] || reason;
+}
 
 type JobMode = "manual" | "bulk";
 
 function getCrawlStartErrorMessage(error: unknown): string {
   const message = error instanceof Error ? error.message : "";
+  if (isAdminRequired(error)) return ADMIN_REQUIRED_MESSAGE;
+  if (message.includes("HTTP 400")) return message.replace(/^HTTP 400[^:]*:\s*/, "");
+  if (message.includes("HTTP 503") && message.includes("재시작")) return "서버가 재시작 중입니다. 잠시 후 다시 시도해 주세요.";
   if (message.includes("수집 작업 저장소가 준비되지 않았습니다")) {
     return "배포 데이터베이스가 최신 상태가 아닙니다. 앱을 다시 게시해 데이터베이스 스키마를 동기화해 주세요.";
   }
@@ -109,6 +125,14 @@ export default function Crawl() {
       setShowCompletionModal(true);
       setActiveJobId(null);
       void queryClient.invalidateQueries();
+    } else if (jobStatus?.status === "partial" || jobStatus?.status === "interrupted") {
+      toast({
+        title: jobStatus.status === "partial" ? "일부 구간 미확인" : "수집 중단",
+        description: `신규 ${jobStatus.collected}건 저장. 차단·상한·대기 구간은 재수집이 필요합니다. 상세 기록을 확인하세요.`,
+        variant: "destructive",
+      });
+      setActiveJobId(null);
+      void queryClient.invalidateQueries();
     } else if (jobStatus?.status === "error") {
       toast({
         title: "수집 실패",
@@ -123,7 +147,7 @@ export default function Crawl() {
   const [alternativePending,setAlternativePending]=useState(false);
   const handleAlternative=async()=>{
     if(!startDate||!endDate)return;setAlternativePending(true);setFinalStats(null);setActiveMode('manual');
-    try{const r=await fetch('/api/crawl/start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({startDate,endDate,alternative:true})});const data=await r.json();if(!r.ok)throw new Error(data.error||'수집 시작 실패');setActiveJobId(data.jobId);toast({title:'구글 제외 보완 시작',description:'매일경제·서울신문 자체 검색과 다음 검색을 대조합니다.'});}catch(error){toast({title:'보완 시작 실패',description:String(error),variant:'destructive'});}finally{setAlternativePending(false);}
+    try{const r=await fetch('/api/crawl/start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({startDate,endDate,alternative:true})});ensureAuthorized(r);const data=await r.json();if(!r.ok)throw new Error(data.error||'수집 시작 실패');setActiveJobId(data.jobId);toast({title:'구글 제외 보완 시작',description:'매일경제·서울신문 자체 검색과 다음 검색을 대조합니다.'});}catch(error){toast({title:'보완 시작 실패',description:String(error),variant:'destructive'});}finally{setAlternativePending(false);}
   };
   const handleStartCrawl = () => {
     if (!startDate || !endDate) return;
@@ -203,7 +227,7 @@ export default function Crawl() {
           {historyError && <p role="alert">수집 이력을 불러오지 못했습니다. 서버 연결을 확인하세요.</p>}
           {recentJobs?.length === 0 && <p className="text-sm text-muted-foreground">아직 실행 이력이 없습니다. 아래에서 기간을 선택해 수집을 시작하세요.</p>}
           {recentJobs?.map(job => <details key={job.id} className="rounded-md border p-3 text-sm">
-            <summary className="cursor-pointer">{new Date(job.createdAt).toLocaleString("ko-KR", { timeZone: "Asia/Seoul" })} · {job.status === "done" ? "완료 (상세 확인)" : job.status === "error" ? "오류" : "수집 중"} · 신규 {job.collected}건 / 중복 {job.duplicates}건</summary>
+            <summary className="cursor-pointer">{new Date(job.createdAt).toLocaleString("ko-KR", { timeZone: "Asia/Seoul" })} · {job.status === "done" ? "완료" : job.status === "partial" ? "일부 미확인" : job.status === "interrupted" ? "중단됨" : job.status === "error" ? "오류" : "수집 중"} · 신규 {job.collected}건 / 중복 {job.duplicates}건</summary>
             <p className="mt-2 whitespace-pre-wrap break-words text-muted-foreground">{job.error || "실행 중이거나 상세 진단이 없는 이전 작업입니다."}</p>
           </details>)}
         </CardContent>
@@ -212,6 +236,7 @@ export default function Crawl() {
       <RelevanceReview disabled={isRunning} onRetry={async () => {
         try {
           const response = await fetch('/api/crawl/start', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({startDate, endDate, reviewOnly: true})});
+          ensureAuthorized(response);
           const result = await response.json();
           if (!response.ok) throw new Error(result.error || '재확인 시작 실패');
           setActiveMode('manual'); setActiveJobId(result.jobId);
@@ -226,11 +251,13 @@ export default function Crawl() {
         </CardHeader>
         <CardContent className="space-y-3 text-sm">
           <p className="text-muted-foreground">RSS에 검색 기간의 기사가 없더라도 원문 사이트에 기사가 없다는 뜻은 아닙니다. 최신 RSS·Atom·뉴스 사이트맵과 포털 검색의 보관 범위가 다릅니다. 포털로 발견한 기사는 원문 링크와 언론사명을 확인하며 수집 경로는 그대로 표시합니다.</p>
-          <details><summary className="cursor-pointer font-medium">전체 {sourceHealth.sources.length}개 소스 상태 보기</summary>
+          {sourceHealth.summary && <p>언론사 {sourceHealth.summary.publishers}곳(피드 {sourceHealth.summary.feeds}개) · 정상 {sourceHealth.summary.normal} · 부분지원 {sourceHealth.summary.partial} · 미지원 {sourceHealth.summary.unsupported}</p>}
+          <details><summary className="cursor-pointer font-medium">언론사 {sourceHealth.sources.length}곳 상태 보기</summary>
             <div className="mt-3 max-h-96 overflow-auto divide-y">
               {sourceHealth.sources.map((source, index) => <div key={`${source.domain}-${index}`} className="py-3 space-y-1">
-                <p className="font-medium">{source.name} · {source.status === "normal" ? "정상" : source.status === "partial" ? "부분지원" : "미지원 / 현재 확인 실패"}</p>
-                <p className="text-muted-foreground break-words">{sourceReasons[source.reason] || source.reason}</p>
+                <p className="font-medium">{source.name} · {supportLabel(source.status)}{source.scope === "section" ? ` · 섹션 피드 ${source.feedCount}개` : ""}</p>
+                <p className="text-muted-foreground break-words">{describeSourceReason(source.reason)}</p>
+                {(source.oldest || source.newest) && <p className="text-muted-foreground">피드에 남아 있는 기사 발행일: {kstDate(source.oldest)} ~ {kstDate(source.newest)} · 이 범위 밖 기간은 직접 수집할 수 없습니다.</p>}
                 {source.endpoint && /^https?:\/\//.test(source.endpoint) && <a href={source.endpoint} target="_blank" rel="noreferrer" className="underline break-all">확인한 소스 열기</a>}
               </div>)}
             </div>

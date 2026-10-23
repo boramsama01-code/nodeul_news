@@ -133,15 +133,16 @@ export default function Dashboard() {
       {/* KPI Cards */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         <KpiCard
-          title={`${selectedYear}년 보도 건수`}
+          title={`${selectedYear}년 수집 행(경로별)`}
           value={summary?.totalArticles}
           prev={prevSummary?.totalArticles}
           loading={loadingSummary}
           icon={<Newspaper className="w-4 h-4" />}
           color="blue"
-          sub={summary && summary.totalAllTime !== summary.totalArticles
-            ? `전체 연도 원본 ${summary.totalAllTime.toLocaleString()}건 (키워드 제외분 포함)`
-            : undefined}
+          sub={summary ? [
+            summary.uniqueStoredUrls !== undefined ? `고유 저장 URL ${summary.uniqueStoredUrls.toLocaleString()}건 (같은 기사도 주소가 다르면 따로 셈)` : "",
+            summary.totalAllTime !== summary.totalArticles ? `전체 연도 원본 ${summary.totalAllTime.toLocaleString()}건 (키워드 제외분 포함)` : "",
+          ].filter(Boolean).join(" · ") || undefined : undefined}
         />
         <KpiCard
           title="부정 기사"

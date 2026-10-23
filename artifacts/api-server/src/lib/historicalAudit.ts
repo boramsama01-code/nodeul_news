@@ -9,6 +9,7 @@ import { sleepWithJitter } from "./crawlPacing";
 import { logger } from "./logger";
 import { validateDateRange } from "./crawlRuntime";
 import { readState, writeState } from "./persistentState";
+import { isShuttingDown, markJobActive } from "./lifecycle";
 
 interface MonthRange {
   key: string;
@@ -17,7 +18,7 @@ interface MonthRange {
   end: string;
 }
 
-interface HistoricalAuditProgress {
+export interface HistoricalAuditProgress {
   version: 3;
   startDate: string;
   endDate: string;
@@ -90,7 +91,7 @@ function newProgress(startDate: string, endDate: string): HistoricalAuditProgres
   };
 }
 
-function validProgress(
+export function validProgress(
   value: HistoricalAuditProgress | undefined,
   startDate: string,
   endDate: string,
@@ -162,14 +163,34 @@ async function ensureJob(jobId: string, progress: HistoricalAuditProgress): Prom
   else await db.insert(crawlJobsTable).values({ id: jobId, ...initial });
 }
 
+// Configured end date > end date fixed at the first start > today.
+export function auditEndDate(input: { configured?: string; anchored?: string; today: string }): string {
+  return input.configured || input.anchored || input.today;
+}
+
+// Progress is already saved; the row must not stay "running" after the
+// process stops (the job id is released before shutdown collects it).
+async function markInterrupted(jobId: string): Promise<void> {
+  await db.update(crawlJobsTable).set({
+    status: "interrupted",
+    currentSource: "",
+    error: "서버 재시작으로 중단됨: 다음 시작 때 저장된 진행 상황부터 이어서 점검합니다.",
+  }).where(eq(crawlJobsTable.id, jobId)).catch(() => {});
+}
+
 export async function startConfiguredHistoricalAudit(): Promise<void> {
   const startDate = process.env.AUTO_AUDIT_START_DATE;
   if (!startDate) return;
-  const endDate = process.env.AUTO_AUDIT_END_DATE || todayKst();
+  const force = process.env.AUTO_AUDIT_FORCE === "true";
+  // The end date is fixed when the audit first starts and reused after every
+  // restart; otherwise a new day discards all saved progress (R11).
+  const anchorKey = `historical-audit-anchor:${process.env.AUTO_AUDIT_JOB_ID || startDate}`;
+  const anchor = force ? undefined : await readState<{ endDate: string }>(anchorKey);
+  const endDate = auditEndDate({ configured: process.env.AUTO_AUDIT_END_DATE, anchored: anchor?.endDate, today: todayKst() });
   validateDateRange(startDate, endDate);
+  if (anchor?.endDate !== endDate) await writeState(anchorKey, { endDate, fixedAt: new Date().toISOString() });
   const jobId = process.env.AUTO_AUDIT_JOB_ID || `historical-audit-${startDate}-${endDate}-v3`;
   const stateKey = `historical-audit-progress:${jobId}`;
-  const force = process.env.AUTO_AUDIT_FORCE === "true";
   const stored = force ? undefined : await readState<HistoricalAuditProgress>(stateKey);
   const progress = validProgress(stored, startDate, endDate) ? stored : newProgress(startDate, endDate);
 
@@ -178,6 +199,8 @@ export async function startConfiguredHistoricalAudit(): Promise<void> {
     return;
   }
 
+  const releaseJob = markJobActive(jobId);
+  try {
   await ensureJob(jobId, progress);
   logger.info({ jobId, startDate, endDate, resumed: !!stored }, "Configured historical audit started");
   await logCoverage("before", startDate, endDate);
@@ -196,6 +219,7 @@ export async function startConfiguredHistoricalAudit(): Promise<void> {
     if (pending.length === 0) break;
 
     for (const month of pending) {
+      if (isShuttingDown()) { await markInterrupted(jobId); return; }
       const ordinal = months.findIndex((entry) => entry.key === month.key);
       progress.crawlAttempts[month.key] = (progress.crawlAttempts[month.key] ?? 0) + 1;
       await db.update(crawlJobsTable).set({
@@ -232,6 +256,7 @@ export async function startConfiguredHistoricalAudit(): Promise<void> {
   }
 
   for (const month of months) {
+    if (isShuttingDown()) { await markInterrupted(jobId); return; }
     if (progress.publisherMonths.includes(month.key)) continue;
     const ordinal = months.findIndex((entry) => entry.key === month.key);
     await db.update(crawlJobsTable).set({
@@ -280,7 +305,9 @@ export async function startConfiguredHistoricalAudit(): Promise<void> {
   ].filter(Boolean).join("\n");
 
   await db.update(crawlJobsTable).set({
-    status: complete ? "done" : "error",
+    // Months that ended partial (blocked portals) are retried on the next
+    // start; the run itself is partial, not an error.
+    status: complete ? "done" : "partial",
     progress: 100,
     collected: progress.collected,
     duplicates: progress.duplicates,
@@ -290,4 +317,5 @@ export async function startConfiguredHistoricalAudit(): Promise<void> {
   }).where(eq(crawlJobsTable.id, jobId));
 
   logger.info({ jobId, complete, progress, summary }, "Configured historical audit finished");
+  } finally { releaseJob(); }
 }

@@ -3,6 +3,24 @@ import { and, eq, isNull } from "drizzle-orm";
 import { addToSet, isDuplicate, isRelevant, type ArticleData } from "./crawlerUtils";
 import { unidentifiedPublisher } from "./publisherMetrics";
 
+// Key for "the user deleted this article": scheme, "www.", host case, fragment,
+// trailing slash, tracking parameters and parameter order do not make a
+// different article. Paths and other parameters are kept as they are.
+export function trashKey(raw: string): string {
+  try {
+    const url = new URL(raw);
+    url.protocol = "https:";
+    url.hostname = url.hostname.toLowerCase().replace(/^www\./, "");
+    url.hash = "";
+    const kept = [...url.searchParams.entries()]
+      .filter(([key]) => !/^(?:utm_[a-z_]+|fbclid|gclid|igshid|mc_[a-z]+)$/i.test(key))
+      .sort(([left], [right]) => left.localeCompare(right));
+    url.search = new URLSearchParams(kept).toString();
+    if (url.pathname.length > 1) url.pathname = url.pathname.replace(/\/+$/, "");
+    return url.toString();
+  } catch { return raw.trim(); }
+}
+
 // Exact source+URL matches survive publisher-name corrections. Deleted rows
 // remain duplicates, so a scheduled collection cannot undo a user's deletion.
 export async function loadExistingArticles(database: typeof db) {
@@ -13,6 +31,8 @@ export async function loadExistingArticles(database: typeof db) {
   }).from(articlesTable);
   const active = new Set<string>();
   const trash = new Set<string>();
+  // A user's deletion applies to the original article, whichever route finds it again.
+  const trashedUrls = new Set(rows.filter(row => row.deletedAt).map(row => trashKey(row.url)));
   const exact = new Map(rows.map(row => [JSON.stringify([row.source, row.url]), row]));
   for (const row of rows) addToSet(row.url, row.title, row.publishedAt,
     row.deletedAt ? trash : active, row.source, row.mediaName);
@@ -54,6 +74,7 @@ export async function loadExistingArticles(database: typeof db) {
         }
         return true;
       }
+      if (trashedUrls.has(trashKey(article.url)) || trashedUrls.has(trashKey(collectedUrl))) { trashDuplicates++; return true; }
       if (isDuplicate(article.url, article.title, article.publishedAt, active, article.source, article.mediaName)) return true;
       if (isDuplicate(article.url, article.title, article.publishedAt, trash, article.source, article.mediaName)) {
         trashDuplicates++; return true;

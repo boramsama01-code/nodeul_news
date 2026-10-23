@@ -5,9 +5,11 @@ import router from "./routes";
 import { logger } from "./lib/logger";
 import path from "node:path";
 import { pool } from "@workspace/db";
+import { limitWrites, requireAdmin } from "./lib/adminAuth";
 
 const app: Express = express();
 app.disable("x-powered-by");
+app.set("trust proxy", 1); // Render terminates TLS in one proxy hop; req.ip = client
 
 app.use(
   pinoHttp({
@@ -51,10 +53,13 @@ app.use((req, res, next) => {
   next();
 });
 app.use(cors({ origin: process.env.ALLOWED_ORIGIN || false }));
-app.use(express.json());
+app.use(express.json({ limit: "64kb" }));
 app.use(express.urlencoded({ extended: true }));
 
-// Public access requested by the owner. Keep origin checks and secret masking.
+// Reads stay public; writes and full exports require the administrator.
+// The limiter runs first so rejected credentials also count against it.
+app.use("/api", limitWrites());
+app.use(requireAdmin);
 
 app.use("/api", router);
 app.use("/api", (_req, res) => { res.status(404).json({ error: "API not found" }); });

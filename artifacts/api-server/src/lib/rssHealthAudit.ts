@@ -12,6 +12,7 @@ export interface RssHealthItem {
   discovered?: boolean;
   status: "ok" | "empty" | "error";
   support?: OfficialFeedResult["status"];
+  kind?: OfficialFeedResult["kind"];
   reason?: string;
   requestCount?: number;
   itemCount: number;
@@ -56,6 +57,7 @@ function toHealthItem(source: NewsSource, result: OfficialFeedResult): RssHealth
     discovered,
     status,
     support: result.status,
+    kind: result.kind,
     reason: result.reason,
     requestCount: result.requestCount,
     itemCount,
@@ -63,6 +65,74 @@ function toHealthItem(source: NewsSource, result: OfficialFeedResult): RssHealth
     newest: result.newestPublishedAt,
     error,
   };
+}
+
+export type SupportLevel = "normal" | "partial" | "unsupported";
+
+export interface PublisherSourceHealth {
+  name: string;
+  domain: string;
+  method: "rss_direct";
+  status: SupportLevel;
+  reason: string;
+  endpoint?: string;
+  scope: "whole" | "section";
+  feedCount: number;
+  usableFeeds: number;
+  itemCount: number;
+  newest?: string;
+  oldest?: string;
+  feeds: { endpoint: string; kind?: string | null; status: SupportLevel; reason: string; itemCount: number; newest?: string; oldest?: string }[];
+}
+
+// The loader's own support level decides the label. "Items present" is not the
+// same as "normal": a news sitemap only lists recent articles, a repaired feed
+// may be incomplete. Reports written before `support` existed are shown as
+// partial at best, never as normal.
+export function feedSupportLevel(item: RssHealthItem): SupportLevel {
+  if (item.support === "normal" && item.itemCount > 0) return "normal";
+  if (item.support === "partial" || (item.support === "normal" && item.itemCount === 0)) return "partial";
+  if (item.support === "unsupported") return "unsupported";
+  return item.status === "ok" ? "partial" : "unsupported";
+}
+
+function feedReason(item: RssHealthItem, level: SupportLevel): string {
+  if (item.reason) return item.reason;
+  if (!item.support) return level === "partial" ? "legacy_report_without_support_level" : item.error || "no_usable_official_feed";
+  return item.error || "no_usable_official_feed";
+}
+
+// One row per publisher. Several section feeds of one paper are one source,
+// not several "normal" sources.
+export function summarizeSourceHealth(items: RssHealthItem[]): { summary: Record<SupportLevel, number> & { publishers: number; feeds: number }; sources: PublisherSourceHealth[] } {
+  const groups = new Map<string, RssHealthItem[]>();
+  for (const item of items) groups.set(item.name, [...(groups.get(item.name) ?? []), item]);
+  const sources = [...groups.entries()].map(([name, group]): PublisherSourceHealth => {
+    const feeds = group.map((item) => {
+      const status = feedSupportLevel(item);
+      return { endpoint: item.resolvedUrl || item.url, kind: item.kind, status, reason: feedReason(item, status), itemCount: item.itemCount, newest: item.newest, oldest: item.oldest };
+    });
+    const usable = feeds.filter((feed) => feed.status !== "unsupported");
+    const scope = group.length > 1 ? "section" : "whole";
+    const status: SupportLevel = usable.length === 0 ? "unsupported"
+      : usable.length === feeds.length && feeds.every((feed) => feed.status === "normal") ? "normal" : "partial";
+    const reason = status === "unsupported" ? feeds[0].reason
+      : scope === "section" ? `section_feeds:${usable.length}/${feeds.length}`
+      : feeds[0].reason;
+    const dates = (key: "newest" | "oldest") => usable.map((feed) => feed[key]).filter((value): value is string => !!value).sort();
+    let domain = "";
+    try { domain = new URL(group[0].url).hostname; } catch { domain = ""; }
+    return {
+      name, domain, method: "rss_direct", status, reason, scope,
+      endpoint: (usable[0] ?? feeds[0]).endpoint,
+      feedCount: feeds.length, usableFeeds: usable.length,
+      itemCount: usable.reduce((sum, feed) => sum + feed.itemCount, 0),
+      newest: dates("newest").at(-1), oldest: dates("oldest")[0],
+      feeds,
+    };
+  });
+  const count = (level: SupportLevel) => sources.filter((source) => source.status === level).length;
+  return { summary: { publishers: sources.length, feeds: items.length, normal: count("normal"), partial: count("partial"), unsupported: count("unsupported") }, sources };
 }
 
 export async function auditDirectRssFeeds(): Promise<{

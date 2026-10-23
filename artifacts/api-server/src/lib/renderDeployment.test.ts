@@ -59,7 +59,7 @@ test("cloud credentials survive reload without using local files; failed writes 
   }
 });
 
-test("public access ignores legacy passwords, preserves origin checks and reports database failure", async () => {
+test("reads and the settings view stay public, writes need the administrator, origin checks stay, database failure is reported", async () => {
   process.env.APP_PASSWORD = "fixture-password-not-for-production";
   const {pool} = await import("@workspace/db");
   const originalQuery = pool.query;
@@ -67,9 +67,9 @@ test("public access ignores legacy passwords, preserves origin checks and report
   const {default:app} = await import("../app");
   // Exercise Express's full request pipeline without opening OS sockets.
   const url = "http://localhost";
-  const request = (target: string, options: {headers?: Record<string,string>} = {}) => new Promise<{status:number;json:()=>Promise<unknown>;text:()=>Promise<string>}>((resolve, reject) => {
+  const request = (target: string, options: {headers?: Record<string,string>; method?: string} = {}) => new Promise<{status:number;json:()=>Promise<unknown>;text:()=>Promise<string>}>((resolve, reject) => {
     const req = new IncomingMessage(new Socket());
-    req.method = "GET";
+    req.method = options.method || "GET";
     req.url = new URL(target).pathname;
     req.headers = {host:"localhost", ...Object.fromEntries(Object.entries(options.headers || {}).map(([key,value]) => [key.toLowerCase(),value]))};
     const res = new ServerResponse(req);
@@ -87,10 +87,20 @@ test("public access ignores legacy passwords, preserves origin checks and report
     assert.equal(health.status, 200);
     assert.deepEqual(await health.json(), {status:"ok"});
     assert.equal((await request(`${url}/api/healthz/private`)).status, 404);
+    process.env.RENDER_GIT_COMMIT = "0123456789abcdef0123456789abcdef01234567";
     assert.equal((await request(`${url}/api/settings`, {headers:{Authorization:"Basic invalid"}})).status, 200);
-    const settings = await request(`${url}/api/settings`);
+    const anonymous = await request(`${url}/api/settings`);
+    assert.equal(anonymous.status, 200);
+    const anonymousText = await anonymous.text();
+    assert.ok(!anonymousText.includes(process.env.APP_PASSWORD));
+    assert.ok(!anonymousText.includes("0123456789abcdef"), "the deployed revision is shown to the administrator only");
+    const settings = await request(`${url}/api/settings`, {headers});
     assert.equal(settings.status, 200);
-    assert.ok(!(await settings.text()).includes(process.env.APP_PASSWORD));
+    const adminText = await settings.text();
+    assert.ok(!adminText.includes(process.env.APP_PASSWORD));
+    assert.ok(adminText.includes("0123456789abcdef"));
+    assert.equal((await request(`${url}/api/crawl/start`, {method:"DELETE"})).status, 401, "writes without the administrator are refused");
+    assert.equal((await request(`${url}/api/crawl/start`, {method:"OPTIONS"})).status !== 401, true, "preflight is not refused by authentication");
     assert.equal((await request(`${url}/api/settings`, {headers:{...headers, Origin:"https://untrusted.example"}})).status, 403);
     pool.query = (async () => {throw new Error("database-secret-must-not-leak");}) as typeof pool.query;
     const failure = await request(`${url}/api/healthz`);
@@ -99,5 +109,6 @@ test("public access ignores legacy passwords, preserves origin checks and report
   } finally {
     pool.query = originalQuery;
     delete process.env.APP_PASSWORD;
+    delete process.env.RENDER_GIT_COMMIT;
   }
 });

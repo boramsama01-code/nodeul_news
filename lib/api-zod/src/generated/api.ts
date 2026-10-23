@@ -254,6 +254,12 @@ export const GetStatsSummaryResponse = zod.object({
   selfPRCount: zod.number(),
   negativeCount: zod.number(),
   totalAllTime: zod.number(),
+  uniqueStoredUrls: zod
+    .number()
+    .optional()
+    .describe(
+      "Distinct stored URLs in the period. The same story reached through two routes counts once only when both routes stored the same URL; this is not a count of unique articles.",
+    ),
 });
 
 /**

@@ -10,6 +10,7 @@ import { dirname, join } from "node:path";
 import iconv from "iconv-lite";
 import { extractArticleText } from "./articleText";
 import { classifyProviderResponse, readProviderHealth } from "./providerHealth";
+import { isShuttingDown } from "./lifecycle";
 import { readState, writeState, usesDatabaseState } from "./persistentState";
 import { ArticleData, cleanPublisherName, extractPressName, isPortalUrl, resolveMediaNameStrict, resolvePublisherHint } from "./crawlerUtils";
 
@@ -123,11 +124,18 @@ async function fetchPage(url: URL, addresses: Address[], signal: AbortSignal, ma
 export interface PageIdentity { publisher: string | null; evidence: string[]; aliasEligible: boolean; nextUrl?: string; nextEvidence?: string }
 export function inspectPublisherPage(html: string, pageUrl: string): PageIdentity {
   const $ = cheerio.load(html);
-  const signals: { name: string; evidence: string }[] = [];
+  // Lower rank wins: portal press label, the article's own publisher,
+  // og:site_name, other publisher meta, then page- and site-level publishers.
+  // A WebSite/WebPage publisher is often a parent group, not the newsroom.
+  const RANK: Record<string, number> = {
+    "portal:press-logo": 0, "portal:press-name": 0, "schema.org:article-publisher": 1, "meta:og:site_name": 2,
+    "meta:publisher": 3, "meta:dc.publisher": 3, "meta:dcterms.publisher": 3, "schema.org:page-publisher": 4, "schema.org:site-publisher": 5,
+  };
+  const signals: { name: string; evidence: string; rank: number }[] = [];
   const add = (name: unknown, evidence: string) => {
     if (typeof name !== "string") return;
     const cleaned = cleanPublisherName(name);
-    if (cleaned) signals.push({ name: cleaned, evidence });
+    if (cleaned) signals.push({ name: cleaned, evidence, rank: RANK[evidence] ?? 9 });
   };
   const objects: Record<string, unknown>[] = [];
   const visit = (value: unknown, depth = 0): void => {
@@ -149,7 +157,10 @@ export function inspectPublisherPage(html: string, pageUrl: string): PageIdentit
   };
   for (const object of objects) {
     const types = Array.isArray(object["@type"]) ? object["@type"] : [object["@type"]];
-    if (types.some(type => typeof type === "string" && /(?:Article|WebPage|WebSite)$/.test(type))) add(publisherName(object.publisher), "schema.org:publisher");
+    const level = types.some(type => typeof type === "string" && /Article$/.test(type)) ? "article"
+      : types.some(type => typeof type === "string" && /WebPage$/.test(type)) ? "page"
+      : types.some(type => typeof type === "string" && /WebSite$/.test(type)) ? "site" : null;
+    if (level) add(publisherName(object.publisher), `schema.org:${level}-publisher`);
   }
   $("meta").each((_i, element) => {
     const key = ($(element).attr("property") || $(element).attr("name") || "").toLowerCase();
@@ -159,12 +170,16 @@ export function inspectPublisherPage(html: string, pageUrl: string): PageIdentit
     $(".media_end_head_top_logo img[alt], .press_logo img[alt], .link_cp img[alt], #kakaoServiceLogo img[alt]").each((_i, element) => add($(element).attr("alt"), "portal:press-logo"));
     $(".cp_name, .head_view .tit_cp").each((_i, element) => add($(element).text(), "portal:press-name"));
   }
+  signals.sort((left, right) => left.rank - right.rank);
   const publisher = signals[0]?.name || null;
   const evidence = signals.filter(item => item.name === publisher).map(item => item.evidence);
-  // Learn only exact hosts, and only when schema and page metadata agree.
+  const conflicting = signals.some(item => item.name !== publisher && item.rank <= 3);
+  if (conflicting) evidence.push("publisher-signals-disagree");
+  // Learn only exact hosts, and only when the ARTICLE's publisher and the page
+  // metadata agree and no other strong signal names someone else.
   // Shared blogging platforms never acquire a host-wide publisher identity.
   const host = new URL(pageUrl).hostname;
-  const aliasEligible = !isPortalUrl(pageUrl) && !/(?:^|\.)(?:tistory\.com|wordpress\.com|blogspot\.com|medium\.com)$/i.test(host) && evidence.includes("schema.org:publisher") && evidence.some(item => item.startsWith("meta:"));
+  const aliasEligible = !isPortalUrl(pageUrl) && !/(?:^|\.)(?:tistory\.com|wordpress\.com|blogspot\.com|medium\.com)$/i.test(host) && !conflicting && evidence.includes("schema.org:article-publisher") && evidence.some(item => item.startsWith("meta:"));
   const result: PageIdentity = { publisher, evidence: [...new Set(evidence)], aliasEligible };
   const candidate = (raw: string | undefined, evidenceName: string): boolean => {
     if (!raw) return false;
@@ -327,6 +342,7 @@ export function createPublisherResolver(options: ResolverOptions = {}) {
     flushTimer.unref();
   }
   async function requestPage(url: URL, budget: Budget): Promise<PageResponse> {
+    if (isShuttingDown()) throw new Error("shutting-down");
     if ((blockedHosts.get(url.hostname) || 0) > now()) throw new Error("host-cooldown");
     if (url.hostname === "news.google.com") {
       const state = (await readProviderHealth()).google_news;
@@ -464,11 +480,25 @@ export function createPublisherResolver(options: ResolverOptions = {}) {
     await ensureCacheLoaded();
     const rawFallback = extractPressName(fallbackName || "");
     const fallback = resolvePublisherHint(rawFallback) || null;
+    // Precedence: domain map > portal press label (네이버/다음) > page metadata
+    // (ranked in inspectPublisherPage) and learned host aliases > other
+    // collection labels such as an RSS <source>.
+    const portalLabel = /^(?:네이버(?:뉴스)?|다음(?:뉴스)?)\(/.test(fallbackName || "");
     const decorate = (value: ArticleIdentity): ArticleIdentity => {
-      const publisher = cleanPublisherName(value.publisher || "") || null;
-      return publisher || !fallback || value.status === "blocked"
-        ? { ...value, publisher, evidence: [...value.evidence] }
-        : { ...value, publisher: fallback, evidence: [...value.evidence, "collection:publisher-label"], status: "partial" };
+      const page = cleanPublisherName(value.publisher || "") || null;
+      if (value.status === "blocked") return { ...value, publisher: page, evidence: [...value.evidence] };
+      const mappedOriginal = value.originalUrl ? resolveMediaNameStrict(value.originalUrl) : "";
+      if (mappedOriginal) return { ...value, publisher: mappedOriginal, evidence: value.evidence.includes("domain-map") ? [...value.evidence] : [...value.evidence, "domain-map"], status: "resolved" };
+      if (fallback && portalLabel) {
+        const agrees = page === fallback;
+        return { ...value, publisher: fallback,
+          evidence: [...value.evidence, "portal:publisher-label", ...(page && !agrees ? [`page-publisher-differs:${page}`] : [])],
+          status: agrees ? value.status : "partial" };
+      }
+      if (page) return { ...value, publisher: page, evidence: [...value.evidence] };
+      return fallback
+        ? { ...value, publisher: fallback, evidence: [...value.evidence, "collection:publisher-label"], status: "partial" }
+        : { ...value, publisher: null, evidence: [...value.evidence] };
     };
     let url: string;
     try { url = normalizedUrl(input); } catch { return { originalUrl: input, publisher: null, evidence: ["blocked:unsafe-url"], status: "blocked" }; }
@@ -478,7 +508,7 @@ export function createPublisherResolver(options: ResolverOptions = {}) {
     const cached = entries.get(url);
     if (cached && cached.expiresAt > now()) return decorate(cached.value);
     const alias = aliases.get(new URL(url).hostname);
-    if (alias && alias.expiresAt > now()) return { originalUrl: url, publisher: alias.publisher, evidence: ["verified-host-cache"], status: "resolved" };
+    if (alias && alias.expiresAt > now()) return decorate({ originalUrl: url, publisher: alias.publisher, evidence: ["verified-host-cache"], status: "resolved" });
     if (!isPortalUrl(url) && fallback) return decorate({ originalUrl: url, publisher: null, evidence: [], status: "partial" });
     if (controls.network === false || controls.maxRequests === 0 || controls.budget?.remaining === 0) return decorate({ originalUrl: url, publisher: null, evidence: ["network-skipped"], status: "unresolved" });
     const existing = pending.get(url);
