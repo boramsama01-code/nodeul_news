@@ -3,6 +3,7 @@ import { logger } from "./lib/logger";
 import { loadRuntimeConfig } from "./lib/configStore";
 import { startScheduler } from "./lib/scheduler";
 import { startConfiguredHistoricalAudit } from "./lib/historicalAudit";
+import { startConfiguredBigKindsBackfill } from "./lib/bigKindsBackfill";
 import { pool } from "@workspace/db";
 import { drainBackgroundTasks, isShuttingDown, startTrackedJob } from "./lib/lifecycle";
 
@@ -21,6 +22,18 @@ const server = app.listen(port, process.env.HOST || "0.0.0.0", () => {
         logger.error(
           { error: error instanceof Error ? error.message : String(error) },
           "Configured historical audit failed",
+        );
+      });
+    }, delayMs).unref();
+  }
+  if (process.env.BIGKINDS_IMPORT_KEY && process.env.BIGKINDS_IMPORT_CHUNKS) {
+    const delayMs = Math.max(5_000, Number(process.env.BIGKINDS_IMPORT_START_DELAY_MS || 15_000));
+    setTimeout(() => {
+      if (isShuttingDown()) return;
+      void startTrackedJob(undefined, startConfiguredBigKindsBackfill, async (error) => {
+        logger.error(
+          { error: error instanceof Error ? error.message : String(error) },
+          "Configured BigKinds backfill failed",
         );
       });
     }, delayMs).unref();
