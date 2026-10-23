@@ -30,7 +30,7 @@ await edit("artifacts/web/src/pages/articles.tsx", [
                             <span className="truncate">{article.title}</span>
                             <ExternalLink className="w-3 h-3 shrink-0 opacity-0 group-hover:opacity-60 transition-opacity" />
                           </a>`,
-`                          {/^^https?:\\/\\//i.test(article.url) ? (
+`                          {/^https?:\/\//i.test(article.url) ? (
                             <a
                               href={article.url}
                               target="_blank"
@@ -41,11 +41,11 @@ await edit("artifacts/web/src/pages/articles.tsx", [
                               <ExternalLink className="w-3 h-3 shrink-0 opacity-0 group-hover:opacity-60 transition-opacity" />
                             </a>
                           ) : (
-                            <div className="font-medium text-[13px] line-clamp-1" title={\`${article.title} · ${article.url}\`}>
+                            <div className="font-medium text-[13px] line-clamp-1">
                               {article.title}
                               <span className="ml-2 text-[10px] font-normal text-muted-foreground">빅카인즈 가져오기</span>
                             </div>
-                          )}`.replace("{/^^", "{/^"),
+                          )}`,
     "non-http article rendering",
   ],
 ]);
