@@ -1,0 +1,47 @@
+name: Apply manual imports and API coverage
+
+on:
+  push:
+    branches: ["feature/manual-imports-naver-api"]
+    paths:
+      - ".github/manual-imports-*.patch"
+      - ".github/workflows/apply-manual-imports.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  apply-test-commit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/manual-imports-naver-api
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.25.0
+          run_install: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Apply staged patches
+        run: |
+          set -euo pipefail
+          git apply --index --whitespace=fix .github/manual-imports-backend.patch
+          git apply --index --whitespace=fix .github/manual-imports-web.patch
+      - name: Remove one-shot files
+        run: git rm .github/manual-imports-backend.patch .github/manual-imports-web.patch .github/workflows/apply-manual-imports.yml
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
+      - run: pnpm test
+      - run: pnpm build:standalone
+      - name: Commit validated changes
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "Add normal-path article imports and official API coverage"
+          git push origin HEAD:feature/manual-imports-naver-api
