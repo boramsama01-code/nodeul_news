@@ -18,6 +18,7 @@ import { join } from "node:path";
 import { readRelevanceReviews } from "../lib/relevanceReview";
 import { readState, usesDatabaseState } from "../lib/persistentState";
 import { summarizeSourceHealth, type RssHealthItem } from "../lib/rssHealthAudit";
+import { probeSearchProvider } from "../lib/providerProbe";
 
 const router: IRouter = Router();
 router.get("/crawl/relevance", async (req, res) => {
@@ -46,6 +47,14 @@ router.get("/crawl/source-health", async (_req, res) => {
     const report = JSON.parse(await readFile(join(process.env.DATA_DIR || ".local", "source-audit.json"), "utf8"));
     res.json(report);
   } catch { res.json({ checkedAt: null, sources: [] }); }
+});
+router.post("/crawl/provider-probe", async (req, res) => {
+  const provider = req.body?.provider;
+  if (provider !== "naver_web" && provider !== "daum_web") {
+    res.status(400).json({ error: "provider는 naver_web 또는 daum_web이어야 합니다." });
+    return;
+  }
+  res.json(await probeSearchProvider(provider));
 });
 router.get("/crawl/recent", async (_req, res) => {
   const jobs = await db.select().from(crawlJobsTable).orderBy(desc(crawlJobsTable.createdAt)).limit(10);

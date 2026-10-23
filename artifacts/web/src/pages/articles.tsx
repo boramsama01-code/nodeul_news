@@ -22,6 +22,7 @@ import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
 import { useToast } from "@/hooks/use-toast";
 import { Trash2, Plus, ChevronLeft, ChevronRight, Loader2, ExternalLink, Download } from "lucide-react";
+import { ArticleImportPanel } from "@/components/article-import-panel";
 
 const MONTHS = ["전체", "1월", "2월", "3월", "4월", "5월", "6월", "7월", "8월", "9월", "10월", "11월", "12월"];
 const PAGE_SIZE = 20;
@@ -236,6 +237,8 @@ export default function Articles() {
         </CardContent>
       </Card>
 
+      <ArticleImportPanel onImported={invalidate} />
+
       {/* Filter Bar */}
       <Card>
         <CardContent className="pt-4 pb-3">
@@ -384,15 +387,22 @@ export default function Articles() {
                           </span>
                         </td>
                         <td className="px-4 py-2.5 max-w-0 w-full">
-                          <a
-                            href={article.url}
-                            target="_blank"
-                            rel="noreferrer"
-                            className="hover:text-primary font-medium text-[13px] line-clamp-1 transition-colors flex items-center gap-1 group"
-                          >
-                            <span className="truncate">{article.title}</span>
-                            <ExternalLink className="w-3 h-3 shrink-0 opacity-0 group-hover:opacity-60 transition-opacity" />
-                          </a>
+                          {(article.url.startsWith("http://") || article.url.startsWith("https://")) ? (
+                            <a
+                              href={article.url}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="hover:text-primary font-medium text-[13px] line-clamp-1 transition-colors flex items-center gap-1 group"
+                            >
+                              <span className="truncate">{article.title}</span>
+                              <ExternalLink className="w-3 h-3 shrink-0 opacity-0 group-hover:opacity-60 transition-opacity" />
+                            </a>
+                          ) : (
+                            <div className="font-medium text-[13px] line-clamp-1">
+                              {article.title}
+                              <span className="ml-2 text-[10px] font-normal text-muted-foreground">빅카인즈 가져오기</span>
+                            </div>
+                          )}
                           {preview && (
                             <p className="text-xs text-muted-foreground mt-0.5 line-clamp-1">
                               {preview}

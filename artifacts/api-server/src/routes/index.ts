@@ -5,6 +5,7 @@ import crawlRouter from "./crawl";
 import statsRouter from "./stats";
 import settingsRouter from "./settings";
 import adminRouter from "./admin";
+import importsRouter from "./imports";
 
 const router: IRouter = Router();
 
@@ -14,5 +15,6 @@ router.use(crawlRouter);
 router.use(statsRouter);
 router.use(settingsRouter);
 router.use(adminRouter);
+router.use(importsRouter);
 
 export default router;
