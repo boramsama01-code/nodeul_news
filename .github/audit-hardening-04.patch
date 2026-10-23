@@ -1,0 +1,814 @@
+diff --git a/artifacts/api-server/src/lib/renderDeployment.test.ts b/artifacts/api-server/src/lib/renderDeployment.test.ts
+index 2f7d158..7dbb83b 100644
+--- a/artifacts/api-server/src/lib/renderDeployment.test.ts
++++ b/artifacts/api-server/src/lib/renderDeployment.test.ts
+@@ -59,7 +59,7 @@ test("cloud credentials survive reload without using local files; failed writes
+   }
+ });
+ 
+-test("public access ignores legacy passwords, preserves origin checks and reports database failure", async () => {
++test("reads and the settings view stay public, writes need the administrator, origin checks stay, database failure is reported", async () => {
+   process.env.APP_PASSWORD = "fixture-password-not-for-production";
+   const {pool} = await import("@workspace/db");
+   const originalQuery = pool.query;
+@@ -67,9 +67,9 @@ test("public access ignores legacy passwords, preserves origin checks and report
+   const {default:app} = await import("../app");
+   // Exercise Express's full request pipeline without opening OS sockets.
+   const url = "http://localhost";
+-  const request = (target: string, options: {headers?: Record<string,string>} = {}) => new Promise<{status:number;json:()=>Promise<unknown>;text:()=>Promise<string>}>((resolve, reject) => {
++  const request = (target: string, options: {headers?: Record<string,string>; method?: string} = {}) => new Promise<{status:number;json:()=>Promise<unknown>;text:()=>Promise<string>}>((resolve, reject) => {
+     const req = new IncomingMessage(new Socket());
+-    req.method = "GET";
++    req.method = options.method || "GET";
+     req.url = new URL(target).pathname;
+     req.headers = {host:"localhost", ...Object.fromEntries(Object.entries(options.headers || {}).map(([key,value]) => [key.toLowerCase(),value]))};
+     const res = new ServerResponse(req);
+@@ -87,10 +87,20 @@ test("public access ignores legacy passwords, preserves origin checks and report
+     assert.equal(health.status, 200);
+     assert.deepEqual(await health.json(), {status:"ok"});
+     assert.equal((await request(`${url}/api/healthz/private`)).status, 404);
++    process.env.RENDER_GIT_COMMIT = "0123456789abcdef0123456789abcdef01234567";
+     assert.equal((await request(`${url}/api/settings`, {headers:{Authorization:"Basic invalid"}})).status, 200);
+-    const settings = await request(`${url}/api/settings`);
++    const anonymous = await request(`${url}/api/settings`);
++    assert.equal(anonymous.status, 200);
++    const anonymousText = await anonymous.text();
++    assert.ok(!anonymousText.includes(process.env.APP_PASSWORD));
++    assert.ok(!anonymousText.includes("0123456789abcdef"), "the deployed revision is shown to the administrator only");
++    const settings = await request(`${url}/api/settings`, {headers});
+     assert.equal(settings.status, 200);
+-    assert.ok(!(await settings.text()).includes(process.env.APP_PASSWORD));
++    const adminText = await settings.text();
++    assert.ok(!adminText.includes(process.env.APP_PASSWORD));
++    assert.ok(adminText.includes("0123456789abcdef"));
++    assert.equal((await request(`${url}/api/crawl/start`, {method:"DELETE"})).status, 401, "writes without the administrator are refused");
++    assert.equal((await request(`${url}/api/crawl/start`, {method:"OPTIONS"})).status !== 401, true, "preflight is not refused by authentication");
+     assert.equal((await request(`${url}/api/settings`, {headers:{...headers, Origin:"https://untrusted.example"}})).status, 403);
+     pool.query = (async () => {throw new Error("database-secret-must-not-leak");}) as typeof pool.query;
+     const failure = await request(`${url}/api/healthz`);
+@@ -99,5 +109,6 @@ test("public access ignores legacy passwords, preserves origin checks and report
+   } finally {
+     pool.query = originalQuery;
+     delete process.env.APP_PASSWORD;
++    delete process.env.RENDER_GIT_COMMIT;
+   }
+ });
+diff --git a/artifacts/api-server/src/routes/admin.ts b/artifacts/api-server/src/routes/admin.ts
+new file mode 100644
+index 0000000..4fa6c12
+--- /dev/null
++++ b/artifacts/api-server/src/routes/admin.ts
+@@ -0,0 +1,26 @@
++import { Router, type IRouter } from "express";
++import { checkPassword, clearSessionCookie, isAdminRequest, limitLogins, sessionCookie, setSessionCookie } from "../lib/adminAuth";
++
++const router: IRouter = Router();
++
++router.get("/admin/session", (req, res) => {
++  res.json({ admin: isAdminRequest(req) });
++});
++
++router.post("/admin/session", limitLogins(), (req, res) => {
++  if (!checkPassword(req.body?.password)) {
++    res.status(401).json({ error: "비밀번호가 맞지 않습니다." });
++    return;
++  }
++  const value = sessionCookie();
++  if (!value) { res.status(503).json({ error: "관리자 비밀번호가 서버에 설정되지 않았습니다." }); return; }
++  setSessionCookie(res, value);
++  res.json({ admin: true });
++});
++
++router.delete("/admin/session", (_req, res) => {
++  clearSessionCookie(res);
++  res.json({ admin: false });
++});
++
++export default router;
+diff --git a/artifacts/api-server/src/routes/articles.ts b/artifacts/api-server/src/routes/articles.ts
+index 3f71af2..d632f33 100644
+--- a/artifacts/api-server/src/routes/articles.ts
++++ b/artifacts/api-server/src/routes/articles.ts
+@@ -28,19 +28,21 @@ import { logger } from "../lib/logger";
+ import ExcelJS from "exceljs";
+ import { relevantArticleCondition } from "../lib/articleRelevance";
+ import { isRelevant } from "../lib/newsRelevance";
++import { clampPageSize, normalizeListQuery } from "../lib/queryParams";
+ 
+ const router: IRouter = Router();
+ 
+ // GET /articles
+ router.get("/articles", async (req, res): Promise<void> => {
+-  const parsed = ListArticlesQueryParams.safeParse(req.query);
++  const parsed = ListArticlesQueryParams.safeParse(normalizeListQuery(req.query));
+   if (!parsed.success) {
+     res.status(400).json({ error: parsed.error.message });
+     return;
+   }
+ 
+-  const { year, month, keyword, isNegative, isSelfPR, page = 1, limit = 20 } = parsed.data;
+-  const offset = (page - 1) * limit;
++  const { year, month, keyword, isNegative, isSelfPR, page = 1 } = parsed.data;
++  const limit = clampPageSize(parsed.data.limit);
++  const offset = (Math.max(1, page) - 1) * limit;
+ 
+   const conditions = [isNull(articlesTable.deletedAt), relevantArticleCondition()];
+ 
+diff --git a/artifacts/api-server/src/routes/crawl.ts b/artifacts/api-server/src/routes/crawl.ts
+index cd4d02b..d29d136 100644
+--- a/artifacts/api-server/src/routes/crawl.ts
++++ b/artifacts/api-server/src/routes/crawl.ts
+@@ -3,7 +3,7 @@ import { Router, type IRouter } from "express";
+ import { v4 as uuidv4 } from "uuid";
+ import { db, crawlJobsTable } from "@workspace/db";
+ import { eq, desc } from "drizzle-orm";
+-import { validateDateRange } from "../lib/crawlRuntime";
++import { validateCrawlSpan } from "../lib/crawlRuntime";
+ import {
+   StartCrawlBody,
+   StartBulkCrawlBody,
+@@ -12,11 +12,12 @@ import {
+ import { runCrawlJob } from "../lib/crawlOrchestrator";
+ import { runBulkCrawlJob } from "../lib/bulkCrawlOrchestrator";
+ import { logger } from "../lib/logger";
++import { isShuttingDown, startTrackedJob } from "../lib/lifecycle";
+ import { readFile } from "node:fs/promises";
+ import { join } from "node:path";
+ import { readRelevanceReviews } from "../lib/relevanceReview";
+ import { readState, usesDatabaseState } from "../lib/persistentState";
+-import type { RssHealthItem } from "../lib/rssHealthAudit";
++import { summarizeSourceHealth, type RssHealthItem } from "../lib/rssHealthAudit";
+ 
+ const router: IRouter = Router();
+ router.get("/crawl/relevance", async (req, res) => {
+@@ -38,11 +39,8 @@ router.get("/crawl/source-health", async (_req, res) => {
+   try {
+     if (usesDatabaseState()) {
+       const report = await readState<{checkedAt:string;items:RssHealthItem[]}>("rss-health-audit-latest");
+-      res.json({checkedAt:report?.checkedAt || null,sources:(report?.items || []).map(item => ({
+-        name:item.name,domain:new URL(item.url).hostname,method:"rss_direct",endpoint:item.url,
+-        status:item.status === "ok" ? "normal" : item.status === "empty" ? "partial" : "unsupported",
+-        reason:item.error || (item.status === "ok" ? "official_feed_available" : "현재 피드에서 기사 항목을 확인하지 못함"),itemCount:item.itemCount,
+-      }))});
++      // Support level comes from the feed loader, grouped per publisher.
++      res.json({checkedAt:report?.checkedAt || null,...summarizeSourceHealth(report?.items || [])});
+       return;
+     }
+     const report = JSON.parse(await readFile(join(process.env.DATA_DIR || ".local", "source-audit.json"), "utf8"));
+@@ -62,8 +60,9 @@ router.post("/crawl/start", async (req, res): Promise<void> => {
+     return;
+   }
+ 
++  if (isShuttingDown()) { res.status(503).json({ error: "서버가 재시작 중입니다. 잠시 후 다시 시도해 주세요." }); return; }
+   const { startDate, endDate } = parsed.data;
+-  try { validateDateRange(startDate, endDate); }
++  try { validateCrawlSpan(startDate, endDate, 31); }
+   catch (err) { res.status(400).json({ error: String(err) }); return; }
+   const jobId = uuidv4();
+ 
+@@ -86,10 +85,10 @@ router.post("/crawl/start", async (req, res): Promise<void> => {
+     return;
+   }
+ 
+-  // Fire and forget — do NOT await
+-  runCrawlJob(jobId, startDate, endDate, {alternative:req.body.alternative===true, reviewOnly:req.body.reviewOnly===true}).catch((err) => {
++  // The job and its failure write are tracked together; shutdown waits for both.
++  void startTrackedJob(jobId, () => runCrawlJob(jobId, startDate, endDate, {alternative:req.body.alternative===true, reviewOnly:req.body.reviewOnly===true}), async (err) => {
+     logger.error({ err, jobId }, "Crawl job crashed");
+-    db.update(crawlJobsTable)
++    await db.update(crawlJobsTable)
+       .set({ status: "error", error: String(err) })
+       .where(eq(crawlJobsTable.id, jobId))
+       .catch(() => {});
+@@ -106,8 +105,9 @@ router.post("/crawl/bulk-start", async (req, res): Promise<void> => {
+     return;
+   }
+ 
++  if (isShuttingDown()) { res.status(503).json({ error: "서버가 재시작 중입니다. 잠시 후 다시 시도해 주세요." }); return; }
+   const { startDate, endDate } = parsed.data;
+-  try { validateDateRange(startDate, endDate); }
++  try { validateCrawlSpan(startDate, endDate, 400); }
+   catch (err) { res.status(400).json({ error: String(err) }); return; }
+   const jobId = uuidv4();
+ 
+@@ -130,10 +130,9 @@ router.post("/crawl/bulk-start", async (req, res): Promise<void> => {
+     return;
+   }
+ 
+-  // Fire and forget — do NOT await
+-  runBulkCrawlJob(jobId, startDate, endDate).catch((err) => {
++  void startTrackedJob(jobId, () => runBulkCrawlJob(jobId, startDate, endDate), async (err) => {
+     logger.error({ err, jobId }, "Bulk crawl job crashed");
+-    db.update(crawlJobsTable)
++    await db.update(crawlJobsTable)
+       .set({ status: "error", error: String(err) })
+       .where(eq(crawlJobsTable.id, jobId))
+       .catch(() => {});
+diff --git a/artifacts/api-server/src/routes/index.ts b/artifacts/api-server/src/routes/index.ts
+index 104539d..9ef3d26 100644
+--- a/artifacts/api-server/src/routes/index.ts
++++ b/artifacts/api-server/src/routes/index.ts
+@@ -4,6 +4,7 @@ import articlesRouter from "./articles";
+ import crawlRouter from "./crawl";
+ import statsRouter from "./stats";
+ import settingsRouter from "./settings";
++import adminRouter from "./admin";
+ 
+ const router: IRouter = Router();
+ 
+@@ -12,5 +13,6 @@ router.use(articlesRouter);
+ router.use(crawlRouter);
+ router.use(statsRouter);
+ router.use(settingsRouter);
++router.use(adminRouter);
+ 
+ export default router;
+diff --git a/artifacts/api-server/src/routes/settings.ts b/artifacts/api-server/src/routes/settings.ts
+index 28c2cbf..4e18f90 100644
+--- a/artifacts/api-server/src/routes/settings.ts
++++ b/artifacts/api-server/src/routes/settings.ts
+@@ -3,6 +3,7 @@ import { getKakaoApiKey, setKakaoApiKey, deleteKakaoApiKey, isKakaoApiKeySet } f
+ import { logger } from "../lib/logger";
+ import axios from "axios";
+ import { setNaverKeys } from "../lib/configStore";
++import { isAdminRequest } from "../lib/adminAuth";
+ 
+ const router: IRouter = Router();
+ router.post("/settings/naver-key", async (req, res): Promise<void> => {
+@@ -15,7 +16,10 @@ router.post("/settings/naver-key", async (req, res): Promise<void> => {
+ });
+ 
+ // GET /api/settings — returns current config status (never exposes keys)
+-router.get("/settings", (_req, res): void => {
++router.get("/settings", (req, res): void => {
++  // Public page data: configuration flags only. Build revision and key prefix
++  // are shown to the administrator alone.
++  const admin = isAdminRequest(req);
+   const kakaoSet = isKakaoApiKeySet();
+   const kakaoKey = getKakaoApiKey();
+   res.json({
+@@ -26,12 +30,12 @@ router.get("/settings", (_req, res): void => {
+       trial: process.env.DEPLOYMENT_MODE === "free-trial",
+       databaseExpiresAt: process.env.DATABASE_EXPIRES_AT || null,
+       schedulerEnabled: process.env.RUN_SCHEDULER === "true",
+-      revision: process.env.RENDER_GIT_COMMIT || null,
++      revision: admin ? process.env.RENDER_GIT_COMMIT || null : null,
+     },
+     crawlIntervalMinutes: Number(process.env.CRAWL_INTERVAL_MINUTES || 30),
+     kakaoApiKey: {
+       configured: kakaoSet,
+-      masked: kakaoSet && kakaoKey ? `${kakaoKey.slice(0, 4)}${"*".repeat(Math.max(0, kakaoKey.length - 4))}` : null,
++      masked: admin && kakaoSet && kakaoKey ? `${kakaoKey.slice(0, 4)}${"*".repeat(Math.max(0, kakaoKey.length - 4))}` : null,
+     },
+   });
+ });
+diff --git a/artifacts/api-server/src/routes/stats.ts b/artifacts/api-server/src/routes/stats.ts
+index d83d7ec..ea79063 100644
+--- a/artifacts/api-server/src/routes/stats.ts
++++ b/artifacts/api-server/src/routes/stats.ts
+@@ -3,6 +3,7 @@ import { db, articlesTable } from "@workspace/db";
+ import { sql, and, gte, lte, desc, isNull } from "drizzle-orm";
+ import { GetMonthlyStatsQueryParams } from "@workspace/api-zod";
+ import { relevantArticleCondition } from "../lib/articleRelevance";
++import { PRESS_NAME_SQL } from "../lib/queryParams";
+ 
+ const router: IRouter = Router();
+ 
+@@ -41,6 +42,7 @@ router.get("/stats/monthly", async (req, res): Promise<void> => {
+     .select({
+       month: sql<number>`EXTRACT(MONTH FROM (${articlesTable.publishedAt} ${sql.raw(KST)}))`,
+       total: sql<number>`COUNT(*)`,
++      uniqueStoredUrls: sql<number>`COUNT(DISTINCT ${articlesTable.url})`,
+       negative: sql<number>`COUNT(*) FILTER (WHERE ${articlesTable.isNegative} = true)`,
+       selfPR: sql<number>`COUNT(*) FILTER (WHERE ${articlesTable.isSelfPR} = true)`,
+     })
+@@ -60,7 +62,7 @@ router.get("/stats/monthly", async (req, res): Promise<void> => {
+       const total = Number(r?.total ?? 0);
+       const negative = Number(r?.negative ?? 0);
+       const selfPR = Number(r?.selfPR ?? 0);
+-      return { month: m, total, negative, statistical: total - negative, selfPR };
++      return { month: m, total, uniqueStoredUrls: Number(r?.uniqueStoredUrls ?? 0), negative, statistical: total - negative, selfPR };
+     });
+ 
+     res.json(result);
+@@ -72,7 +74,7 @@ router.get("/stats/monthly", async (req, res): Promise<void> => {
+       const total = Number(r.total);
+       const negative = Number(r.negative);
+       const selfPR = Number(r.selfPR);
+-      return { month: Number(r.month), total, negative, statistical: total - negative, selfPR };
++      return { month: Number(r.month), total, uniqueStoredUrls: Number(r.uniqueStoredUrls), negative, statistical: total - negative, selfPR };
+     }),
+   );
+ });
+@@ -111,6 +113,7 @@ router.get("/stats/summary", async (req, res): Promise<void> => {
+     db
+       .select({
+         totalArticles: sql<number>`COUNT(*)`,
++        uniqueStoredUrls: sql<number>`COUNT(DISTINCT ${articlesTable.url})`,
+         negativeCount: sql<number>`COUNT(*) FILTER (WHERE ${articlesTable.isNegative} = true)`,
+         selfPRCount: sql<number>`COUNT(*) FILTER (WHERE ${articlesTable.isSelfPR} = true)`,
+       })
+@@ -128,7 +131,11 @@ router.get("/stats/summary", async (req, res): Promise<void> => {
+   const totalAllTime = Number(allTimeRow?.totalAllTime ?? 0);
+ 
+   res.json({
++    // totalArticles counts collection rows (one per route). uniqueStoredUrls
++    // counts distinct stored URLs only; a Google redirect URL and the original
++    // URL of the same story are still two. It is NOT a unique-article count.
+     totalArticles,
++    uniqueStoredUrls: Number(row?.uniqueStoredUrls ?? 0),
+     statisticalCount: totalArticles - negativeCount,
+     selfPRCount,
+     negativeCount,
+@@ -148,16 +155,17 @@ router.get("/stats/top-media", async (req, res): Promise<void> => {
+   }
+   const where = conditions.length > 0 ? and(...conditions) : undefined;
+ 
++  const press = sql.raw(PRESS_NAME_SQL);
+   const rows = await db
+     .select({
+-      mediaName: articlesTable.mediaName,
+-      count: sql<number>`COUNT(*)`,
++      mediaName: sql<string>`${press}`,
++      count: sql<number>`COUNT(DISTINCT ${articlesTable.url})`,
+     })
+     .from(articlesTable)
+     .where(where)
+-    .groupBy(articlesTable.mediaName)
+-    .orderBy(sql`COUNT(*) DESC`)
+-    .limit(limit);
++    .groupBy(press)
++    .orderBy(sql`COUNT(DISTINCT ${articlesTable.url}) DESC`)
++    .limit(Number.isFinite(limit) && limit > 0 ? limit : 10);
+ 
+   res.json(rows.map((r) => ({ mediaName: r.mediaName, count: Number(r.count) })));
+ });
+diff --git a/artifacts/web/src/App.tsx b/artifacts/web/src/App.tsx
+index 5a9efb8..1caa74f 100644
+--- a/artifacts/web/src/App.tsx
++++ b/artifacts/web/src/App.tsx
+@@ -1,5 +1,6 @@
+ import { Switch, Route, Router as WouterRouter } from "wouter";
+-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
++import { MutationCache, QueryClient, QueryClientProvider } from "@tanstack/react-query";
++import { isAdminRequired, requestAdminLogin } from "@/lib/admin";
+ import { Toaster } from "@/components/ui/toaster";
+ import { TooltipProvider } from "@/components/ui/tooltip";
+ import NotFound from "@/pages/not-found";
+@@ -11,7 +12,10 @@ import Stats from "@/pages/stats";
+ import SettingsPage from "@/pages/settings";
+ import Trash from "@/pages/trash";
+ 
+-const queryClient = new QueryClient();
++// A refused write (401) opens the administrator login instead of only failing.
++const queryClient = new QueryClient({
++  mutationCache: new MutationCache({ onError: (error) => { if (isAdminRequired(error)) requestAdminLogin("required"); } }),
++});
+ 
+ function Router() {
+   return (
+diff --git a/artifacts/web/src/components/admin-login.tsx b/artifacts/web/src/components/admin-login.tsx
+new file mode 100644
+index 0000000..921b8c3
+--- /dev/null
++++ b/artifacts/web/src/components/admin-login.tsx
+@@ -0,0 +1,102 @@
++import React, { useEffect, useState } from "react";
++import { useQueryClient } from "@tanstack/react-query";
++import { KeyRound, LogOut } from "lucide-react";
++import { Button } from "@/components/ui/button";
++import { Input } from "@/components/ui/input";
++import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
++import {
++  ADMIN_REQUIRED_EVENT,
++  endAdminSession,
++  requestAdminLogin,
++  startAdminSession,
++  useAdminSession,
++} from "@/lib/admin";
++
++// Rendered once in the layout. Opens when a write is refused (401) or when the
++// administrator presses the login button.
++export function AdminLoginDialog() {
++  const queryClient = useQueryClient();
++  const [open, setOpen] = useState(false);
++  const [required, setRequired] = useState(false);
++  const [password, setPassword] = useState("");
++  const [error, setError] = useState("");
++  const [pending, setPending] = useState(false);
++
++  useEffect(() => {
++    const onRequest = (event: Event) => {
++      const reason = (event as CustomEvent<{ reason?: string }>).detail?.reason;
++      setRequired(reason !== "manual");
++      setError("");
++      setOpen(true);
++    };
++    window.addEventListener(ADMIN_REQUIRED_EVENT, onRequest);
++    return () => window.removeEventListener(ADMIN_REQUIRED_EVENT, onRequest);
++  }, []);
++
++  async function submit(event: React.FormEvent) {
++    event.preventDefault();
++    setPending(true); setError("");
++    try {
++      const failure = await startAdminSession(password);
++      if (failure) { setError(failure); return; }
++      setPassword(""); setOpen(false);
++      await queryClient.invalidateQueries();
++    } catch {
++      setError("서버에 연결하지 못했습니다. 잠시 후 다시 시도해 주세요.");
++    } finally { setPending(false); }
++  }
++
++  return (
++    <Dialog open={open} onOpenChange={(next) => { setOpen(next); if (!next) setPassword(""); }}>
++      <DialogContent className="sm:max-w-sm">
++        <form onSubmit={submit} className="space-y-4">
++          <DialogHeader>
++            <DialogTitle>관리자 로그인</DialogTitle>
++            <DialogDescription>
++              {required
++                ? "이 작업은 관리자만 할 수 있습니다. 로그인한 뒤 같은 작업을 다시 실행해 주세요."
++                : "수집 실행, 기사 수정·삭제, 키 등록, 엑셀 내보내기에 필요합니다. 로그인은 이 브라우저에서 8시간 유지됩니다."}
++            </DialogDescription>
++          </DialogHeader>
++          <label className="block text-sm space-y-1">
++            <span>관리자 비밀번호</span>
++            <Input type="password" autoComplete="current-password" value={password} onChange={(e) => setPassword(e.target.value)} autoFocus />
++          </label>
++          {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
++          <DialogFooter>
++            <Button type="submit" disabled={pending || !password}>{pending ? "확인 중" : "로그인"}</Button>
++          </DialogFooter>
++        </form>
++      </DialogContent>
++    </Dialog>
++  );
++}
++
++export function AdminStatusButton({ compact = false }: { compact?: boolean }) {
++  const queryClient = useQueryClient();
++  const { data } = useAdminSession();
++  if (data?.admin) {
++    return (
++      <Button
++        variant="ghost"
++        size="sm"
++        className="text-sidebar-foreground/80 hover:bg-sidebar-accent hover:text-sidebar-foreground"
++        aria-label="관리자 로그아웃"
++        onClick={async () => { await endAdminSession(); await queryClient.invalidateQueries(); }}
++      >
++        <LogOut className="w-4 h-4" />{compact ? null : <span>관리자 로그아웃</span>}
++      </Button>
++    );
++  }
++  return (
++    <Button
++      variant="ghost"
++      size="sm"
++      className="text-sidebar-foreground/80 hover:bg-sidebar-accent hover:text-sidebar-foreground"
++      aria-label="관리자 로그인"
++      onClick={() => requestAdminLogin("manual")}
++    >
++      <KeyRound className="w-4 h-4" />{compact ? null : <span>관리자 로그인</span>}
++    </Button>
++  );
++}
+diff --git a/artifacts/web/src/components/layout.tsx b/artifacts/web/src/components/layout.tsx
+index 0f2aea9..63f9e0c 100644
+--- a/artifacts/web/src/components/layout.tsx
++++ b/artifacts/web/src/components/layout.tsx
+@@ -3,6 +3,7 @@ import { Link, useLocation } from "wouter";
+ import { LayoutDashboard, DownloadCloud, FileText, BarChart2, Menu, Newspaper, Settings, Trash2 } from "lucide-react";
+ import { Button } from "@/components/ui/button";
+ import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet";
++import { AdminLoginDialog, AdminStatusButton } from "@/components/admin-login";
+ 
+ interface LayoutProps {
+   children: React.ReactNode;
+@@ -68,9 +69,10 @@ export function Layout({ children }: LayoutProps) {
+         <div className="flex-1 overflow-y-auto py-2">
+           <NavLinks />
+         </div>
+-        <div className="px-4 py-4 border-t border-sidebar-border/60">
++        <div className="px-4 py-4 border-t border-sidebar-border/60 flex flex-col items-center gap-2">
++          <AdminStatusButton />
+           <div className="text-[10px] text-sidebar-foreground/40 text-center">
+-            독립 프로그램 · 자동 수집
++            조회는 누구나 · 변경은 관리자만
+           </div>
+         </div>
+       </aside>
+@@ -94,6 +96,7 @@ export function Layout({ children }: LayoutProps) {
+             </SheetContent>
+           </Sheet>
+           <Logo />
++          <div className="ml-auto"><AdminStatusButton compact /></div>
+         </header>
+ 
+         {/* Main Content */}
+@@ -102,6 +105,7 @@ export function Layout({ children }: LayoutProps) {
+             {children}
+           </div>
+         </main>
++        <AdminLoginDialog />
+       </div>
+     </div>
+   );
+diff --git a/artifacts/web/src/lib/admin.ts b/artifacts/web/src/lib/admin.ts
+new file mode 100644
+index 0000000..c8cc856
+--- /dev/null
++++ b/artifacts/web/src/lib/admin.ts
+@@ -0,0 +1,51 @@
++import { useQuery } from "@tanstack/react-query";
++
++// Reads are public. Writes, collection runs, key changes and the Excel export
++// need the administrator session (an HttpOnly cookie set by the server).
++export const ADMIN_REQUIRED_EVENT = "nodeul:admin-required";
++export const ADMIN_REQUIRED_MESSAGE = "관리자 로그인이 필요합니다. 로그인한 뒤 다시 시도해 주세요.";
++export const ADMIN_SESSION_KEY = ["admin-session"] as const;
++
++export function isAdminRequired(error: unknown): boolean {
++  const status = (error as { status?: unknown } | null)?.status;
++  return status === 401 || (error instanceof Error && /^HTTP 401\b/.test(error.message));
++}
++
++export function requestAdminLogin(reason: "required" | "manual" = "required"): void {
++  window.dispatchEvent(new CustomEvent(ADMIN_REQUIRED_EVENT, { detail: { reason } }));
++}
++
++// For plain fetch calls: turn a 401 into the login prompt and a clear message.
++export function ensureAuthorized(response: Response): void {
++  if (response.status === 401) {
++    requestAdminLogin("required");
++    throw new Error(ADMIN_REQUIRED_MESSAGE);
++  }
++}
++
++export function useAdminSession() {
++  return useQuery<{ admin: boolean }>({
++    queryKey: ADMIN_SESSION_KEY,
++    queryFn: async () => {
++      const response = await fetch("/api/admin/session");
++      if (!response.ok) return { admin: false };
++      return response.json();
++    },
++    staleTime: 60_000,
++  });
++}
++
++export async function startAdminSession(password: string): Promise<string | null> {
++  const response = await fetch("/api/admin/session", {
++    method: "POST",
++    headers: { "Content-Type": "application/json" },
++    body: JSON.stringify({ password }),
++  });
++  if (response.ok) return null;
++  const data = await response.json().catch(() => ({}));
++  return typeof data.error === "string" ? data.error : `로그인하지 못했습니다. (HTTP ${response.status})`;
++}
++
++export async function endAdminSession(): Promise<void> {
++  await fetch("/api/admin/session", { method: "DELETE" });
++}
+diff --git a/artifacts/web/src/pages/articles.tsx b/artifacts/web/src/pages/articles.tsx
+index 36d6d29..5d724cc 100644
+--- a/artifacts/web/src/pages/articles.tsx
++++ b/artifacts/web/src/pages/articles.tsx
+@@ -9,6 +9,7 @@ import {
+   getGetStatYearsQueryKey,
+ } from "@workspace/api-client-react";
+ import { useQueryClient } from "@tanstack/react-query";
++import { ADMIN_REQUIRED_MESSAGE, ensureAuthorized } from "@/lib/admin";
+ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+ import { Button } from "@/components/ui/button";
+ import { Input } from "@/components/ui/input";
+@@ -68,6 +69,7 @@ export default function Articles() {
+       if (exportStart) params.set("startDate", exportStart);
+       if (exportEnd) params.set("endDate", exportEnd);
+       const res = await fetch(`/api/articles/export?${params.toString()}`);
++      ensureAuthorized(res);
+       if (!res.ok) throw new Error("Export failed");
+       const blob = await res.blob();
+       const url = URL.createObjectURL(blob);
+@@ -78,8 +80,8 @@ export default function Articles() {
+       a.download = match ? decodeURIComponent(match[1]!) : "노들섬_언론보도.xlsx";
+       a.click();
+       URL.revokeObjectURL(url);
+-    } catch {
+-      toast({ title: "다운로드 실패", variant: "destructive" });
++    } catch (error) {
++      toast({ title: "다운로드 실패", description: error instanceof Error && error.message === ADMIN_REQUIRED_MESSAGE ? error.message : undefined, variant: "destructive" });
+     } finally {
+       setExporting(false);
+     }
+diff --git a/artifacts/web/src/pages/crawl.tsx b/artifacts/web/src/pages/crawl.tsx
+index d702e49..a7131b3 100644
+--- a/artifacts/web/src/pages/crawl.tsx
++++ b/artifacts/web/src/pages/crawl.tsx
+@@ -16,15 +16,31 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, Di
+ import { DownloadCloud, CheckCircle2, Clock, Info, Rss, Globe, CalendarRange, Search, AlertCircle, Settings } from "lucide-react";
+ import { Badge } from "@/components/ui/badge";
+ import { Link } from "wouter";
++import { ADMIN_REQUIRED_MESSAGE, ensureAuthorized, isAdminRequired } from "@/lib/admin";
+ 
+ interface RecentJob { id: string; status: string; collected: number; duplicates: number; error: string; createdAt: string; }
+-interface SourceHealth { checkedAt: string | null; sources: { name: string; domain: string; method: string; status: string; reason: string; endpoint?: string; kind?: string; itemCount?: number }[]; }
+-const sourceReasons: Record<string,string> = {official_feed_available:"공식 피드 정상 응답 · 최신 기사 범위 내 수집", advertised_news_sitemap:"공식 뉴스 사이트맵으로 보완 · 최근 기사 범위만 지원", recovered_official_feed:"공식 페이지에서 대체 피드를 발견해 복구", missing_publication_dates:"발행일 누락 · 기간 판정이 어려워 포털 검색으로 보완", sitemap_found_without_titles_and_publication_dates:"사이트맵은 있으나 기사 제목·발행일이 없어 직접 수집 제한", no_usable_official_feed:"제한된 점검 안에서 사용 가능한 공식 피드를 찾지 못함"};
++interface SourceFeed { endpoint: string; kind?: string | null; status: string; reason: string; itemCount: number; newest?: string; oldest?: string }
++interface SourceHealth {
++  checkedAt: string | null;
++  summary?: { publishers: number; feeds: number; normal: number; partial: number; unsupported: number };
++  sources: { name: string; domain: string; method: string; status: string; reason: string; endpoint?: string; scope?: "whole" | "section"; feedCount?: number; usableFeeds?: number; itemCount?: number; newest?: string; oldest?: string; feeds?: SourceFeed[] }[];
++}
++const sourceReasons: Record<string,string> = {official_feed_available:"공식 피드 정상 응답 · 최신 기사 범위 내 수집", advertised_news_sitemap:"공식 뉴스 사이트맵으로 보완 · 최근 기사 범위만 지원", recovered_official_feed:"공식 페이지에서 대체 피드를 발견해 복구", missing_publication_dates:"발행일 누락 · 기간 판정이 어려워 포털 검색으로 보완", sitemap_found_without_titles_and_publication_dates:"사이트맵은 있으나 기사 제목·발행일이 없어 직접 수집 제한", no_usable_official_feed:"제한된 점검 안에서 사용 가능한 공식 피드를 찾지 못함", legacy_report_without_support_level:"이전 점검 결과라 지원 수준 미기록 · 다음 점검 후 확정"};
++const supportLabel = (status: string) => status === "normal" ? "정상" : status === "partial" ? "부분지원" : "미지원 / 현재 확인 실패";
++const kstDate = (value?: string) => value ? new Date(value).toLocaleDateString("ko-KR", { timeZone: "Asia/Seoul" }) : "";
++function describeSourceReason(reason: string): string {
++  const section = /^section_feeds:(\d+)\/(\d+)$/.exec(reason);
++  if (section) return `섹션별 피드 ${section[2]}개 중 ${section[1]}개 사용 가능 · 섹션 피드에 없는 기사는 포털 검색으로 보완`;
++  return sourceReasons[reason] || reason;
++}
+ 
+ type JobMode = "manual" | "bulk";
+ 
+ function getCrawlStartErrorMessage(error: unknown): string {
+   const message = error instanceof Error ? error.message : "";
++  if (isAdminRequired(error)) return ADMIN_REQUIRED_MESSAGE;
++  if (message.includes("HTTP 400")) return message.replace(/^HTTP 400[^:]*:\s*/, "");
++  if (message.includes("HTTP 503") && message.includes("재시작")) return "서버가 재시작 중입니다. 잠시 후 다시 시도해 주세요.";
+   if (message.includes("수집 작업 저장소가 준비되지 않았습니다")) {
+     return "배포 데이터베이스가 최신 상태가 아닙니다. 앱을 다시 게시해 데이터베이스 스키마를 동기화해 주세요.";
+   }
+@@ -109,6 +125,14 @@ export default function Crawl() {
+       setShowCompletionModal(true);
+       setActiveJobId(null);
+       void queryClient.invalidateQueries();
++    } else if (jobStatus?.status === "partial" || jobStatus?.status === "interrupted") {
++      toast({
++        title: jobStatus.status === "partial" ? "일부 구간 미확인" : "수집 중단",
++        description: `신규 ${jobStatus.collected}건 저장. 차단·상한·대기 구간은 재수집이 필요합니다. 상세 기록을 확인하세요.`,
++        variant: "destructive",
++      });
++      setActiveJobId(null);
++      void queryClient.invalidateQueries();
+     } else if (jobStatus?.status === "error") {
+       toast({
+         title: "수집 실패",
+@@ -123,7 +147,7 @@ export default function Crawl() {
+   const [alternativePending,setAlternativePending]=useState(false);
+   const handleAlternative=async()=>{
+     if(!startDate||!endDate)return;setAlternativePending(true);setFinalStats(null);setActiveMode('manual');
+-    try{const r=await fetch('/api/crawl/start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({startDate,endDate,alternative:true})});const data=await r.json();if(!r.ok)throw new Error(data.error||'수집 시작 실패');setActiveJobId(data.jobId);toast({title:'구글 제외 보완 시작',description:'매일경제·서울신문 자체 검색과 다음 검색을 대조합니다.'});}catch(error){toast({title:'보완 시작 실패',description:String(error),variant:'destructive'});}finally{setAlternativePending(false);}
++    try{const r=await fetch('/api/crawl/start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({startDate,endDate,alternative:true})});ensureAuthorized(r);const data=await r.json();if(!r.ok)throw new Error(data.error||'수집 시작 실패');setActiveJobId(data.jobId);toast({title:'구글 제외 보완 시작',description:'매일경제·서울신문 자체 검색과 다음 검색을 대조합니다.'});}catch(error){toast({title:'보완 시작 실패',description:String(error),variant:'destructive'});}finally{setAlternativePending(false);}
+   };
+   const handleStartCrawl = () => {
+     if (!startDate || !endDate) return;
+@@ -203,7 +227,7 @@ export default function Crawl() {
+           {historyError && <p role="alert">수집 이력을 불러오지 못했습니다. 서버 연결을 확인하세요.</p>}
+           {recentJobs?.length === 0 && <p className="text-sm text-muted-foreground">아직 실행 이력이 없습니다. 아래에서 기간을 선택해 수집을 시작하세요.</p>}
+           {recentJobs?.map(job => <details key={job.id} className="rounded-md border p-3 text-sm">
+-            <summary className="cursor-pointer">{new Date(job.createdAt).toLocaleString("ko-KR", { timeZone: "Asia/Seoul" })} · {job.status === "done" ? "완료 (상세 확인)" : job.status === "error" ? "오류" : "수집 중"} · 신규 {job.collected}건 / 중복 {job.duplicates}건</summary>
++            <summary className="cursor-pointer">{new Date(job.createdAt).toLocaleString("ko-KR", { timeZone: "Asia/Seoul" })} · {job.status === "done" ? "완료" : job.status === "partial" ? "일부 미확인" : job.status === "interrupted" ? "중단됨" : job.status === "error" ? "오류" : "수집 중"} · 신규 {job.collected}건 / 중복 {job.duplicates}건</summary>
+             <p className="mt-2 whitespace-pre-wrap break-words text-muted-foreground">{job.error || "실행 중이거나 상세 진단이 없는 이전 작업입니다."}</p>
+           </details>)}
+         </CardContent>
+@@ -212,6 +236,7 @@ export default function Crawl() {
+       <RelevanceReview disabled={isRunning} onRetry={async () => {
+         try {
+           const response = await fetch('/api/crawl/start', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({startDate, endDate, reviewOnly: true})});
++          ensureAuthorized(response);
+           const result = await response.json();
+           if (!response.ok) throw new Error(result.error || '재확인 시작 실패');
+           setActiveMode('manual'); setActiveJobId(result.jobId);
+@@ -226,11 +251,13 @@ export default function Crawl() {
+         </CardHeader>
+         <CardContent className="space-y-3 text-sm">
+           <p className="text-muted-foreground">RSS에 검색 기간의 기사가 없더라도 원문 사이트에 기사가 없다는 뜻은 아닙니다. 최신 RSS·Atom·뉴스 사이트맵과 포털 검색의 보관 범위가 다릅니다. 포털로 발견한 기사는 원문 링크와 언론사명을 확인하며 수집 경로는 그대로 표시합니다.</p>
+-          <details><summary className="cursor-pointer font-medium">전체 {sourceHealth.sources.length}개 소스 상태 보기</summary>
++          {sourceHealth.summary && <p>언론사 {sourceHealth.summary.publishers}곳(피드 {sourceHealth.summary.feeds}개) · 정상 {sourceHealth.summary.normal} · 부분지원 {sourceHealth.summary.partial} · 미지원 {sourceHealth.summary.unsupported}</p>}
++          <details><summary className="cursor-pointer font-medium">언론사 {sourceHealth.sources.length}곳 상태 보기</summary>
+             <div className="mt-3 max-h-96 overflow-auto divide-y">
+               {sourceHealth.sources.map((source, index) => <div key={`${source.domain}-${index}`} className="py-3 space-y-1">
+-                <p className="font-medium">{source.name} · {source.status === "normal" ? "정상" : source.status === "partial" ? "부분지원" : "미지원 / 현재 확인 실패"}</p>
+-                <p className="text-muted-foreground break-words">{sourceReasons[source.reason] || source.reason}</p>
++                <p className="font-medium">{source.name} · {supportLabel(source.status)}{source.scope === "section" ? ` · 섹션 피드 ${source.feedCount}개` : ""}</p>
++                <p className="text-muted-foreground break-words">{describeSourceReason(source.reason)}</p>
++                {(source.oldest || source.newest) && <p className="text-muted-foreground">피드에 남아 있는 기사 발행일: {kstDate(source.oldest)} ~ {kstDate(source.newest)} · 이 범위 밖 기간은 직접 수집할 수 없습니다.</p>}
+                 {source.endpoint && /^https?:\/\//.test(source.endpoint) && <a href={source.endpoint} target="_blank" rel="noreferrer" className="underline break-all">확인한 소스 열기</a>}
+               </div>)}
+             </div>
+diff --git a/artifacts/web/src/pages/dashboard.tsx b/artifacts/web/src/pages/dashboard.tsx
+index 9f78b35..7cab596 100644
+--- a/artifacts/web/src/pages/dashboard.tsx
++++ b/artifacts/web/src/pages/dashboard.tsx
+@@ -133,15 +133,16 @@ export default function Dashboard() {
+       {/* KPI Cards */}
+       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+         <KpiCard
+-          title={`${selectedYear}년 보도 건수`}
++          title={`${selectedYear}년 수집 행(경로별)`}
+           value={summary?.totalArticles}
+           prev={prevSummary?.totalArticles}
+           loading={loadingSummary}
+           icon={<Newspaper className="w-4 h-4" />}
+           color="blue"
+-          sub={summary && summary.totalAllTime !== summary.totalArticles
+-            ? `전체 연도 원본 ${summary.totalAllTime.toLocaleString()}건 (키워드 제외분 포함)`
+-            : undefined}
++          sub={summary ? [
++            summary.uniqueStoredUrls !== undefined ? `고유 저장 URL ${summary.uniqueStoredUrls.toLocaleString()}건 (같은 기사도 주소가 다르면 따로 셈)` : "",
++            summary.totalAllTime !== summary.totalArticles ? `전체 연도 원본 ${summary.totalAllTime.toLocaleString()}건 (키워드 제외분 포함)` : "",
++          ].filter(Boolean).join(" · ") || undefined : undefined}
+         />
+         <KpiCard
+           title="부정 기사"
+diff --git a/artifacts/web/src/pages/settings.tsx b/artifacts/web/src/pages/settings.tsx
+index c2866f5..2cd4e5e 100644
+--- a/artifacts/web/src/pages/settings.tsx
++++ b/artifacts/web/src/pages/settings.tsx
+@@ -3,6 +3,7 @@ import { useState } from "react";
+ import { Input } from "@/components/ui/input";
+ import { Button } from "@/components/ui/button";
+ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
++import { ensureAuthorized } from "@/lib/admin";
+ 
+ interface Configuration {
+   naverApi: { configured: boolean };
+@@ -20,6 +21,7 @@ export default function SettingsPage() {
+     setSaving(true); setMessage("");
+     try {
+       const response = await fetch("/api/settings/naver-key", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({clientId,clientSecret})});
++      ensureAuthorized(response);
+       if (!response.ok) throw new Error("키 저장에 실패했습니다.");
+       setClientId(""); setClientSecret("");
+       setMessage("저장했습니다. 데이터 수집 화면에서 수집 버튼을 눌러 확인해 주세요.");
+@@ -38,7 +40,7 @@ export default function SettingsPage() {
+   const manualCloud = data?.deployment?.cloud === true && !data.deployment.schedulerEnabled;
+   return <div className="space-y-6 max-w-2xl mx-auto">
+     <h2 className="text-2xl font-bold">운영 설정</h2>
+-    {data?.deployment?.revision && <p className="text-sm text-muted-foreground">현재 운영 버전: {data.deployment.revision.slice(0, 7)}</p>}
++    {data?.deployment?.revision && <p className="text-sm text-muted-foreground">현재 운영 버전: {data.deployment.revision.slice(0, 7)} (관리자에게만 표시)</p>}
+     {isError && <p role="alert">서버 설정을 불러오지 못했습니다.</p>}
+     {data?.deployment?.trial && <Card className="border-amber-300 bg-amber-50"><CardHeader><CardTitle>무료 시험 운영 중</CardTitle></CardHeader>
+       <CardContent className="space-y-2 text-sm text-amber-950">
+diff --git a/lib/api-client-react/src/generated/api.schemas.ts b/lib/api-client-react/src/generated/api.schemas.ts
+index 7296a93..96101ad 100644
+--- a/lib/api-client-react/src/generated/api.schemas.ts
++++ b/lib/api-client-react/src/generated/api.schemas.ts
+@@ -88,6 +88,8 @@ export interface StatsSummary {
+   selfPRCount: number;
+   negativeCount: number;
+   totalAllTime: number;
++  /** Distinct stored URLs in the period. The same story reached through two routes counts once only when both routes stored the same URL; this is not a count of unique articles. */
++  uniqueStoredUrls?: number;
+ }
+ 
+ export interface TopMediaItem {
+diff --git a/lib/api-spec/openapi.yaml b/lib/api-spec/openapi.yaml
+index c38631c..31f3809 100644
+--- a/lib/api-spec/openapi.yaml
++++ b/lib/api-spec/openapi.yaml
+@@ -557,6 +557,12 @@ components:
+           type: integer
+         totalAllTime:
+           type: integer
++        uniqueStoredUrls:
++          type: integer
++          description: >-
++            Distinct stored URLs in the period. The same story reached through
++            two routes counts once only when both routes stored the same URL;
++            this is not a count of unique articles.
+ 
+     TopMediaItem:
+       type: object
+diff --git a/lib/api-zod/src/generated/api.ts b/lib/api-zod/src/generated/api.ts
+index 7c96615..745054b 100644
+--- a/lib/api-zod/src/generated/api.ts
++++ b/lib/api-zod/src/generated/api.ts
+@@ -254,6 +254,12 @@ export const GetStatsSummaryResponse = zod.object({
+   selfPRCount: zod.number(),
+   negativeCount: zod.number(),
+   totalAllTime: zod.number(),
++  uniqueStoredUrls: zod
++    .number()
++    .optional()
++    .describe(
++      "Distinct stored URLs in the period. The same story reached through two routes counts once only when both routes stored the same URL; this is not a count of unique articles.",
++    ),
+ });
+ 
+ /**
+diff --git a/lib/api-zod/src/generated/types/statsSummary.ts b/lib/api-zod/src/generated/types/statsSummary.ts
+index e59a444..a9a4cba 100644
+--- a/lib/api-zod/src/generated/types/statsSummary.ts
++++ b/lib/api-zod/src/generated/types/statsSummary.ts
+@@ -12,4 +12,6 @@ export interface StatsSummary {
+   selfPRCount: number;
+   negativeCount: number;
+   totalAllTime: number;
++  /** Distinct stored URLs in the period. The same story reached through two routes counts once only when both routes stored the same URL; this is not a count of unique articles. */
++  uniqueStoredUrls?: number;
+ }
