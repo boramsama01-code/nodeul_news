@@ -5,7 +5,7 @@ import router from "./routes";
 import { logger } from "./lib/logger";
 import path from "node:path";
 import { pool } from "@workspace/db";
-import { limitWrites, requireAdmin } from "./lib/adminAuth";
+import { limitWrites } from "./lib/requestLimits";
 
 const app: Express = express();
 app.disable("x-powered-by");
@@ -56,10 +56,8 @@ app.use(cors({ origin: process.env.ALLOWED_ORIGIN || false }));
 app.use(express.json({ limit: "64kb" }));
 app.use(express.urlencoded({ extended: true }));
 
-// Reads stay public; writes and full exports require the administrator.
-// The limiter runs first so rejected credentials also count against it.
+// Limit write bursts while keeping collection, editing, export and settings password-free.
 app.use("/api", limitWrites());
-app.use(requireAdmin);
 
 app.use("/api", router);
 app.use("/api", (_req, res) => { res.status(404).json({ error: "API not found" }); });

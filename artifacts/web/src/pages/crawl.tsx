@@ -16,7 +16,6 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, Di
 import { DownloadCloud, CheckCircle2, Clock, Info, Rss, Globe, CalendarRange, Search, AlertCircle, Settings } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Link } from "wouter";
-import { ADMIN_REQUIRED_MESSAGE, ensureAuthorized, isAdminRequired } from "@/lib/admin";
 
 interface RecentJob { id: string; status: string; collected: number; duplicates: number; error: string; createdAt: string; }
 interface SourceFeed { endpoint: string; kind?: string | null; status: string; reason: string; itemCount: number; newest?: string; oldest?: string }
@@ -50,7 +49,6 @@ type JobMode = "manual" | "bulk";
 
 function getCrawlStartErrorMessage(error: unknown): string {
   const message = error instanceof Error ? error.message : "";
-  if (isAdminRequired(error)) return ADMIN_REQUIRED_MESSAGE;
   if (message.includes("HTTP 400")) return message.replace(/^HTTP 400[^:]*:\s*/, "");
   if (message.includes("HTTP 503") && message.includes("재시작")) return "서버가 재시작 중입니다. 잠시 후 다시 시도해 주세요.";
   if (message.includes("수집 작업 저장소가 준비되지 않았습니다")) {
@@ -160,7 +158,7 @@ export default function Crawl() {
   const [alternativePending,setAlternativePending]=useState(false);
   const handleAlternative=async()=>{
     if(!startDate||!endDate)return;setAlternativePending(true);setFinalStats(null);setActiveMode('manual');
-    try{const r=await fetch('/api/crawl/start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({startDate,endDate,alternative:true})});ensureAuthorized(r);const data=await r.json();if(!r.ok)throw new Error(data.error||'수집 시작 실패');setActiveJobId(data.jobId);toast({title:'구글 제외 보완 시작',description:'매일경제·서울신문 자체 검색과 다음 검색을 대조합니다.'});}catch(error){toast({title:'보완 시작 실패',description:String(error),variant:'destructive'});}finally{setAlternativePending(false);}
+    try{const r=await fetch('/api/crawl/start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({startDate,endDate,alternative:true})});const data=await r.json();if(!r.ok)throw new Error(data.error||'수집 시작 실패');setActiveJobId(data.jobId);toast({title:'구글 제외 보완 시작',description:'매일경제·서울신문 자체 검색과 다음 검색을 대조합니다.'});}catch(error){toast({title:'보완 시작 실패',description:String(error),variant:'destructive'});}finally{setAlternativePending(false);}
   };
   const handleStartCrawl = () => {
     if (!startDate || !endDate) return;
@@ -208,7 +206,6 @@ export default function Crawl() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ provider }),
       });
-      ensureAuthorized(response);
       const result = await response.json();
       if (!response.ok) throw new Error(result.error || "접근 상태를 확인하지 못했습니다.");
       await queryClient.invalidateQueries({ queryKey: ["provider-health"] });
@@ -267,7 +264,6 @@ export default function Crawl() {
       <RelevanceReview disabled={isRunning} onRetry={async () => {
         try {
           const response = await fetch('/api/crawl/start', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({startDate, endDate, reviewOnly: true})});
-          ensureAuthorized(response);
           const result = await response.json();
           if (!response.ok) throw new Error(result.error || '재확인 시작 실패');
           setActiveMode('manual'); setActiveJobId(result.jobId);

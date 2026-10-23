@@ -146,13 +146,12 @@ test("R8 RSS dates with a KST suffix or Korean dotted format are kept; impossibl
   assert.equal(parseRssPublishedAt({ pubDate: "Sun, 31 Feb 2025 10:00:00 +0900" }), null);
 });
 
-test("R9 an unauthenticated POST cannot change the Naver key; the administrator session can", async () => {
+test("R9 settings work without a password and still persist encrypted API keys", async () => {
   const { pool } = await import("@workspace/db");
   const original = pool.query;
   const previousBackend = process.env.STATE_BACKEND;
   process.env.STATE_BACKEND = "postgres";
   process.env.CONFIG_ENCRYPTION_KEY = "audit-fixture-key-audit-fixture-key-0000";
-  process.env.APP_PASSWORD = "audit-fixture-password-0001";
   const saved = new Map<string, unknown>();
   pool.query = (async (sql: string, params: unknown[]) => {
     if (sql.startsWith("INSERT INTO app_state")) saved.set(String(params[0]), params[1]);
@@ -173,22 +172,21 @@ test("R9 an unauthenticated POST cannot change the Naver key; the administrator 
         app(req, res);
         req.push(text); req.push(null);
       });
-    const anonymous = await call("POST", "/api/settings/naver-key", { clientId: "attacker-id", clientSecret: "attacker-secret" });
-    assert.equal(anonymous.status, 401);
-    assert.equal(process.env.NAVER_CLIENT_ID, undefined);
-    assert.equal(saved.has("runtime-config"), false);
-    assert.equal((await call("POST", "/api/admin/session", { password: "wrong-password-0000" })).status, 401);
-    const login = await call("POST", "/api/admin/session", { password: process.env.APP_PASSWORD });
-    assert.equal(login.status, 200);
-    assert.match(login.cookie || "", /^nn_admin=.+HttpOnly/);
-    const cookie = login.cookie!.split(";")[0];
-    const admin = await call("POST", "/api/settings/naver-key", { clientId: "owner-id", clientSecret: "owner-secret" }, { cookie });
-    assert.equal(admin.status, 200);
+    const result = await call("POST", "/api/settings/naver-key", { clientId: "owner-id", clientSecret: "owner-secret" });
+    assert.equal(result.status, 200);
+    assert.equal(result.cookie, undefined);
+    assert.equal(process.env.NAVER_CLIENT_ID, "owner-id");
+    assert.equal(saved.has("runtime-config"), true);
+    assert.ok(!JSON.stringify(saved.get("runtime-config")).includes("owner-secret"));
+    assert.equal((await call("POST", "/api/settings/naver-key", { clientId: "", clientSecret: "" })).status, 400);
+    assert.equal((await call("POST", "/api/crawl/start", { startDate: "bad", endDate: "bad" })).status, 400);
+    assert.equal((await call("POST", "/api/articles/import-urls", { urls: [] })).status, 400);
+    assert.equal((await call("POST", "/api/settings/naver-key", { clientId: "other", clientSecret: "other-secret" }, { origin: "https://untrusted.example" })).status, 403);
     assert.equal(process.env.NAVER_CLIENT_ID, "owner-id");
   } finally {
     pool.query = original;
     if (previousBackend === undefined) delete process.env.STATE_BACKEND; else process.env.STATE_BACKEND = previousBackend;
-    delete process.env.NAVER_CLIENT_ID; delete process.env.NAVER_CLIENT_SECRET; delete process.env.APP_PASSWORD;
+    delete process.env.NAVER_CLIENT_ID; delete process.env.NAVER_CLIENT_SECRET;
   }
 });
 

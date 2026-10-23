@@ -3,7 +3,6 @@ import { useState } from "react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { ensureAuthorized } from "@/lib/admin";
 
 interface Configuration {
   naverApi: { configured: boolean };
@@ -21,7 +20,6 @@ export default function SettingsPage() {
     setSaving(true); setMessage("");
     try {
       const response = await fetch("/api/settings/naver-key", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({clientId,clientSecret})});
-      ensureAuthorized(response);
       if (!response.ok) throw new Error("키 저장에 실패했습니다.");
       setClientId(""); setClientSecret("");
       setMessage("저장했습니다. 데이터 수집 화면에서 수집 버튼을 눌러 확인해 주세요.");
@@ -40,7 +38,7 @@ export default function SettingsPage() {
   const manualCloud = data?.deployment?.cloud === true && !data.deployment.schedulerEnabled;
   return <div className="space-y-6 max-w-2xl mx-auto">
     <h2 className="text-2xl font-bold">운영 설정</h2>
-    {data?.deployment?.revision && <p className="text-sm text-muted-foreground">현재 운영 버전: {data.deployment.revision.slice(0, 7)} (관리자에게만 표시)</p>}
+    {data?.deployment?.revision && <p className="text-sm text-muted-foreground">현재 운영 버전: {data.deployment.revision.slice(0, 7)}</p>}
     {isError && <p role="alert">서버 설정을 불러오지 못했습니다.</p>}
     {data?.deployment?.trial && <Card className="border-amber-300 bg-amber-50"><CardHeader><CardTitle>무료 시험 운영 중</CardTitle></CardHeader>
       <CardContent className="space-y-2 text-sm text-amber-950">

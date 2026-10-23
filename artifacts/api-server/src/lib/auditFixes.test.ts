@@ -99,48 +99,8 @@ test("C-08 an article trashed under one route is not re-added by another route",
   assert.match(existing.summary(), /휴지통 중복 제외 1건/);
 });
 
-test("C-03 writes and exports need the administrator; reads, settings view, health and preflight stay public", async () => {
-  process.env.APP_PASSWORD = "audit-fixture-password-0001";
-  const { needsAdmin, isAdminRequest } = await import("./adminAuth");
-  const req = (method: string, path: string, authorization?: string) => ({ method, path, headers: authorization ? { authorization } : {} }) as never;
-  const basic = `Basic ${Buffer.from(`admin:${process.env.APP_PASSWORD}`).toString("base64")}`;
-  assert.equal(needsAdmin(req("POST", "/api/settings/naver-key")), true);
-  assert.equal(needsAdmin(req("POST", "/api/crawl/bulk-start")), true);
-  assert.equal(needsAdmin(req("DELETE", "/api/articles/7")), true);
-  assert.equal(needsAdmin(req("GET", "/api/articles/export")), true);
-  assert.equal(needsAdmin(req("GET", "/api/settings")), false, "the settings page is readable; secrets are masked there");
-  assert.equal(needsAdmin(req("GET", "/api/articles")), false);
-  assert.equal(needsAdmin(req("GET", "/api/healthz")), false);
-  assert.equal(needsAdmin(req("OPTIONS", "/api/crawl/start")), false, "CORS preflight is never answered with 401");
-  assert.equal(needsAdmin(req("POST", "/api/admin/session")), false, "the login itself is reachable");
-  assert.equal(isAdminRequest(req("POST", "/api/crawl/start")), false);
-  assert.equal(isAdminRequest(req("POST", "/api/crawl/start", basic)), true);
-  assert.equal(isAdminRequest(req("POST", "/api/crawl/start", "Basic " + Buffer.from("admin:wrong-password-000").toString("base64"))), false);
-  delete process.env.APP_PASSWORD;
-  assert.equal(isAdminRequest(req("POST", "/api/crawl/start", basic)), false, "no configured credential fails closed");
-});
-
-test("C-03 browser session: signed HttpOnly cookie, expiry and key rotation", async () => {
-  process.env.APP_PASSWORD = "audit-fixture-password-0001";
-  process.env.CONFIG_ENCRYPTION_KEY = "audit-fixture-key-audit-fixture-key-0000";
-  const { sessionCookie, hasValidSession, setSessionCookie } = await import("./adminAuth");
-  const now = 1_800_000_000_000;
-  const value = sessionCookie(now)!;
-  const req = (cookie: string) => ({ headers: { cookie } }) as never;
-  assert.equal(hasValidSession(req(`nn_admin=${encodeURIComponent(value)}`), now + 1000), true);
-  assert.equal(hasValidSession(req(`nn_admin=${encodeURIComponent(value)}`), now + 8 * 3600_000 + 1), false, "expires after 8 hours");
-  const [expires] = value.split(".");
-  assert.equal(hasValidSession(req(`nn_admin=${Number(expires) + 3600_000}.${value.split(".")[1]}`), now), false, "a stretched expiry breaks the signature");
-  process.env.APP_PASSWORD = "audit-fixture-password-0002";
-  assert.equal(hasValidSession(req(`nn_admin=${encodeURIComponent(value)}`), now + 1000), false, "rotating the password ends sessions");
-  const headers: Record<string, string> = {};
-  setSessionCookie({ setHeader: (name: string, v: string) => { headers[name] = v; } } as never, value);
-  assert.match(headers["Set-Cookie"], /HttpOnly/); assert.match(headers["Set-Cookie"], /SameSite=Strict/); assert.match(headers["Set-Cookie"], /Path=\/api/);
-  delete process.env.APP_PASSWORD; delete process.env.CONFIG_ENCRYPTION_KEY;
-});
-
-test("C-03 write rate limit answers 429 after the window budget and runs before authentication", async () => {
-  const { rateLimit } = await import("./adminAuth");
+test("C-03 write rate limit answers 429 after the window budget and runs before API routes", async () => {
+  const { rateLimit } = await import("./requestLimits");
   let at = 0; const limiter = rateLimit({ windowMs: 60_000, max: 2, methods: ["POST"], now: () => at });
   const statuses: number[] = [];
   for (let i = 0; i < 3; i++) {
@@ -156,7 +116,7 @@ test("C-03 write rate limit answers 429 after the window budget and runs before 
   assert.equal(passed, true);
   const { readFile } = await import("node:fs/promises");
   const appSource = await readFile(new URL("../app.ts", import.meta.url), "utf8");
-  assert.ok(appSource.indexOf("limitWrites()") < appSource.indexOf("app.use(requireAdmin)"), "rejected credentials also spend the budget");
+  assert.ok(appSource.indexOf("limitWrites()") < appSource.indexOf('app.use("/api", router)'), "all write requests spend the budget before reaching routes");
 });
 
 test("C-03 crawl span limits", async () => {

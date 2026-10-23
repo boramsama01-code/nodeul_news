@@ -27,8 +27,6 @@ projects:
                 fromDatabase:
                   name: nodeul-news-db
                   property: connectionString
-              - key: APP_PASSWORD
-                generateValue: true
               - key: CONFIG_ENCRYPTION_KEY
                 generateValue: true
               - key: STATE_BACKEND
