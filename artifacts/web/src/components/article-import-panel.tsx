@@ -6,7 +6,6 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { useToast } from "@/hooks/use-toast";
-import { ensureAuthorized } from "@/lib/admin";
 
 interface ImportItem {
   input: string;
@@ -61,7 +60,6 @@ export function ArticleImportPanel({ onImported }: { onImported: () => void }) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ urls }),
       });
-      ensureAuthorized(response);
       const data = await response.json() as ImportResponse;
       if (!response.ok) throw new Error(data.error || "URL 가져오기에 실패했습니다.");
       setResult(data); setUrls(""); onImported();
@@ -80,7 +78,6 @@ export function ArticleImportPanel({ onImported }: { onImported: () => void }) {
         headers: { "Content-Type": file.type || "application/octet-stream" },
         body: file,
       });
-      ensureAuthorized(response);
       const data = await response.json() as ImportResponse;
       if (!response.ok) throw new Error(data.error || "빅카인즈 파일을 가져오지 못했습니다.");
       setResult(data); setFile(null); onImported();

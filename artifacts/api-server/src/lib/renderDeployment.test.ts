@@ -59,8 +59,7 @@ test("cloud credentials survive reload without using local files; failed writes 
   }
 });
 
-test("reads and the settings view stay public, writes need the administrator, origin checks stay, database failure is reported", async () => {
-  process.env.APP_PASSWORD = "fixture-password-not-for-production";
+test("password-free routes retain origin checks, hide secrets and report database failure", async () => {
   const {pool} = await import("@workspace/db");
   const originalQuery = pool.query;
   pool.query = (async () => ({rows:[{"?column?":1}], rowCount:1, command:"SELECT", oid:0, fields:[]})) as unknown as typeof pool.query;
@@ -81,34 +80,26 @@ test("reads and the settings view stay public, writes need the administrator, or
     app(req, res);
     req.on("error", reject);
   });
-  const headers = {Authorization:`Basic ${Buffer.from(`admin:${process.env.APP_PASSWORD}`).toString("base64")}`};
   try {
     const health = await request(`${url}/api/healthz`);
     assert.equal(health.status, 200);
     assert.deepEqual(await health.json(), {status:"ok"});
     assert.equal((await request(`${url}/api/healthz/private`)).status, 404);
     process.env.RENDER_GIT_COMMIT = "0123456789abcdef0123456789abcdef01234567";
-    assert.equal((await request(`${url}/api/settings`, {headers:{Authorization:"Basic invalid"}})).status, 200);
     const anonymous = await request(`${url}/api/settings`);
     assert.equal(anonymous.status, 200);
     const anonymousText = await anonymous.text();
-    assert.ok(!anonymousText.includes(process.env.APP_PASSWORD));
-    assert.ok(!anonymousText.includes("0123456789abcdef"), "the deployed revision is shown to the administrator only");
-    const settings = await request(`${url}/api/settings`, {headers});
-    assert.equal(settings.status, 200);
-    const adminText = await settings.text();
-    assert.ok(!adminText.includes(process.env.APP_PASSWORD));
-    assert.ok(adminText.includes("0123456789abcdef"));
-    assert.equal((await request(`${url}/api/crawl/start`, {method:"DELETE"})).status, 401, "writes without the administrator are refused");
+    assert.ok(anonymousText.includes("0123456789abcdef"), "the deployed revision is visible without a login");
+    assert.equal((await request(`${url}/api/admin/session`)).status, 404, "obsolete login endpoint is absent");
+    assert.equal((await request(`${url}/api/crawl/start`, {method:"DELETE"})).status, 404, "unsupported methods reach normal routing without a login");
     assert.equal((await request(`${url}/api/crawl/start`, {method:"OPTIONS"})).status !== 401, true, "preflight is not refused by authentication");
-    assert.equal((await request(`${url}/api/settings`, {headers:{...headers, Origin:"https://untrusted.example"}})).status, 403);
+    assert.equal((await request(`${url}/api/settings`, {headers:{Origin:"https://untrusted.example"}})).status, 403);
     pool.query = (async () => {throw new Error("database-secret-must-not-leak");}) as typeof pool.query;
     const failure = await request(`${url}/api/healthz`);
     assert.equal(failure.status, 503);
     assert.deepEqual(await failure.json(), {status:"unavailable"});
   } finally {
     pool.query = originalQuery;
-    delete process.env.APP_PASSWORD;
     delete process.env.RENDER_GIT_COMMIT;
   }
 });

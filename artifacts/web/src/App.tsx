@@ -1,6 +1,5 @@
 import { Switch, Route, Router as WouterRouter } from "wouter";
-import { MutationCache, QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { isAdminRequired, requestAdminLogin } from "@/lib/admin";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import NotFound from "@/pages/not-found";
@@ -12,10 +11,7 @@ import Stats from "@/pages/stats";
 import SettingsPage from "@/pages/settings";
 import Trash from "@/pages/trash";
 
-// A refused write (401) opens the administrator login instead of only failing.
-const queryClient = new QueryClient({
-  mutationCache: new MutationCache({ onError: (error) => { if (isAdminRequired(error)) requestAdminLogin("required"); } }),
-});
+const queryClient = new QueryClient();
 
 function Router() {
   return (

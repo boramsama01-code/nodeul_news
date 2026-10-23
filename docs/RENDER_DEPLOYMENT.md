@@ -7,7 +7,7 @@
 - 웹서비스 `nodeul-news`: 무료, 싱가포르, 사용자가 수집 버튼을 누를 때 웹 서버 안에서 실행.
 - `RUN_SCHEDULER=false`: 시작·재시작·절전 복귀 시 수집하지 않으며 정기 자동 수집도 실행하지 않습니다.
 - PostgreSQL `nodeul-news-db`: 무료, 싱가포르, 버전 16.
-- 브라우저 기본 인증: 사용자 이름 `admin`, 비밀번호는 Render의 `APP_PASSWORD`.
+- 웹앱은 별도 로그인 없이 기사 조회·수집·편집·내보내기·설정을 사용합니다.
 - 유료 서비스, 유료 AI 키, 별도 Cron Job은 이 구성에서 만들지 않습니다.
 - 실제 Render 배포 설정의 기준은 루트의 `render.yaml`입니다. Blueprint로 연결하면 이후 동기화도 이 파일을 기준으로 합니다.
 
@@ -15,9 +15,9 @@
 
 1. 변경 내용을 GitHub `boramsama01-code/nodeul_news`의 `main`에 반영합니다.
 2. Render의 New Blueprint에서 이 저장소를 선택합니다. 변경 미리보기에서 `nodeul-news/production` 생성, 뉴스 웹서비스 신규 생성, 기존 `nodeul-news-db` 편입만 표시되는지 확인합니다. DB ID는 `dpg-dbcm9fq9lscs73ecsuhg-a`입니다. 이름에 접미사가 붙은 새 DB 생성이 표시되면 적용하지 않고 기존 DB 연결 방식을 선택합니다. `ai-mom-studio`는 변경 대상에 포함하지 않습니다.
-3. 비용이 Free이고 지역이 Singapore인지 확인 후 적용합니다. `DATABASE_URL`은 내부 연결로 자동 연결되며, `APP_PASSWORD`와 `CONFIG_ENCRYPTION_KEY`는 자동 생성됩니다.
-4. 배포가 `live`인지 확인하고 `/api/healthz`가 200인지 확인합니다. 비로그인 상태에서 `/`, `/api/articles`, `/api/settings`는 401이어야 합니다.
-5. Render 환경변수 화면에서 `APP_PASSWORD`를 확인하여 로그인합니다. 키 값을 GitHub, 대화, 로그에 붙이지 않습니다.
+3. 비용이 Free이고 지역이 Singapore인지 확인 후 적용합니다. `DATABASE_URL`은 내부 연결로 자동 연결되며, `CONFIG_ENCRYPTION_KEY`는 자동 생성됩니다.
+4. 배포가 `live`인지 확인하고 `/api/healthz`가 200인지 확인합니다. 비로그인 상태에서 `/`, `/api/articles`, `/api/settings`가 정상 응답하는지 확인합니다.
+5. 설정 화면의 운영 버전을 확인합니다. API 키 값을 GitHub, 대화, 로그에 붙이지 않습니다.
 6. 네이버 API 키는 앱 설정에서 등록합니다. 기존 PC는 오프라인이므로 그 PC의 최신 DB 및 API 키는 이번 복구에 포함되지 않았습니다.
 
 ## 데이터 보존

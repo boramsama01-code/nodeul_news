@@ -50,7 +50,7 @@ Windows 64비트용 `Nodeul-News-Windows.zip`을 원하는 폴더에 압축 해�
 
 소스 ZIP은 실행 바이너리가 아닌 개발용입니다. Node.js 22 이상과 pnpm 11.25.0을 사용합니다. `pnpm install --frozen-lockfile`, `pnpm typecheck`, `pnpm test`, `pnpm build:standalone`으로 검증·빌드합니다.
 
-서버에서는 `.env.example`을 `.env`로 복사하고 비밀번호·네이버 키를 입력한 뒤 `docker compose up -d --build`로 웹·수집·DB를 실행할 수 있습니다. DB 비밀번호는 영문·숫자로 된 긴 무작위 값을 사용하세요. 기본 접속 주소는 서버 내부의 127.0.0.1:8080이며 DB는 외부에 공개하지 않습니다. 공용 접속에는 HTTPS와 APP_PASSWORD 설정이 필요합니다. Docker 실행 자체는 이번 Windows 환경에 Docker가 없어 검증하지 못했습니다.
+서버에서는 `.env.example`을 `.env`로 복사하고 DB 비밀번호·네이버 키를 입력한 뒤 `docker compose up -d --build`로 웹·수집·DB를 실행할 수 있습니다. DB 비밀번호는 영문·숫자로 된 긴 무작위 값을 사용하세요. 기본 접속 주소는 서버 내부의 127.0.0.1:8080이며 DB는 외부에 공개하지 않습니다. 웹앱은 별도 관리자 로그인 없이 사용하며, 공용 접속에는 HTTPS를 사용합니다. Docker 실행 자체는 이번 Windows 환경에 Docker가 없어 검증하지 못했습니다.
 
 초기 DB에만 deploy/init.sql을 사용합니다. 기존 DB에 자동 스키마 삭제·교체를 수행하지 않습니다. 단발 수집은 `docker compose run --rm worker node dist/worker.mjs --once 2026-09-01 2026-09-11`, 진단은 `docker compose run --rm worker node dist/diagnose.mjs`를 사용합니다. `--all` 옵션은 전체 RSS를 검사합니다.
 
