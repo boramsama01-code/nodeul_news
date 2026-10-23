@@ -6,6 +6,7 @@ on:
     paths:
       - ".github/manual-imports-*.patch"
       - ".github/apply-manual-imports.mjs"
+      - ".github/fix-manual-imports.mjs"
       - ".github/workflows/apply-manual-imports.yml"
 
 permissions:
@@ -37,11 +38,13 @@ jobs:
             --exclude=artifacts/api-server/src/routes/crawl.ts \
             .github/manual-imports-backend.patch
       - name: Apply deterministic web transforms
-        run: node .github/apply-manual-imports.mjs
+        run: |
+          node .github/apply-manual-imports.mjs
+          node .github/fix-manual-imports.mjs
       - name: Stage source changes
         run: git add artifacts/api-server artifacts/web lib
       - name: Remove one-shot files
-        run: git rm .github/manual-imports-backend.patch .github/manual-imports-web.patch .github/apply-manual-imports.mjs .github/workflows/apply-manual-imports.yml
+        run: git rm .github/manual-imports-backend.patch .github/manual-imports-web.patch .github/apply-manual-imports.mjs .github/fix-manual-imports.mjs .github/workflows/apply-manual-imports.yml
       - run: pnpm install --frozen-lockfile
       - run: pnpm typecheck
       - run: pnpm test
