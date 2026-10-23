@@ -281,7 +281,7 @@ test("Naver stops repeated continuation URLs or result pages and rejects changed
     const warnings: string[] = [];
     await crawlWarnings.run(warnings, () => crawlNaverWebSearch("2026-01-10", "2026-01-10"));
     assert.equal(requests, mode === "host" || mode === "date" ? 1 : 2);
-    assert.ok(warnings.some(warning => mode === "url" ? warning.includes("동일 다음 페이지 주소") : mode === "response" ? warning.includes("동일 페이지 반복") : warning.includes("검색어·기간과 일치하지 않아")));
+    assert.ok(warnings.some(warning => mode === "url" ? warning.includes("동일 다음 페이지 주소") : mode === "response" ? warning.includes("동일 페이지 반복") : warning.includes("다음 페이지 주소 형식 변경")));
     mockGet.mock.restore();
   }
 });

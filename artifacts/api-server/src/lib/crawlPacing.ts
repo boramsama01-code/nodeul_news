@@ -1,5 +1,6 @@
 import { logger } from "./logger";
-import { validateDateRange } from "./crawlRuntime";
+import { validateDateRange, warnSource } from "./crawlRuntime";
+import { isShuttingDown, pause } from "./lifecycle";
 
 export interface DateRange {
   start: string;
@@ -52,7 +53,7 @@ export async function sleepWithJitter(minMs: number, maxMs: number): Promise<voi
   const min = Math.max(0, Math.floor(minMs));
   const max = Math.max(min, Math.floor(maxMs));
   const delay = min + Math.floor(Math.random() * (max - min + 1));
-  await new Promise((resolve) => setTimeout(resolve, delay));
+  await pause(delay);
 }
 
 export async function crawlDateChunks<T>(
@@ -67,8 +68,20 @@ export async function crawlDateChunks<T>(
 
   for (let index = 0; index < ranges.length; index++) {
     const range = ranges[index]!;
+    if (isShuttingDown()) {
+      warnSource(label, `${range.start}~${ranges.at(-1)!.end} 구간 미수집: 서버 재시작으로 중단`);
+      break;
+    }
     logger.info({ label, range, index: index + 1, total: ranges.length }, "Paced date chunk started");
-    results.push(...await crawler(range.start, range.end));
+    try {
+      results.push(...await crawler(range.start, range.end));
+    } catch (error) {
+      // Keep the chunks already collected; the failed range is an incomplete
+      // warning, so the job ends as "partial" and the range can be re-run.
+      const message = error instanceof Error ? error.message : String(error);
+      logger.error({ label, range, error: message }, "Paced date chunk failed");
+      warnSource(label, `${range.start}~${range.end} 구간 수집 실패: ${message.slice(0, 200)}`);
+    }
     if (index < ranges.length - 1) {
       await sleepWithJitter(options.pauseMinMs ?? 1800, options.pauseMaxMs ?? 3200);
     }

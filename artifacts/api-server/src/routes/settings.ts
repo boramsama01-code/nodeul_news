@@ -3,6 +3,7 @@ import { getKakaoApiKey, setKakaoApiKey, deleteKakaoApiKey, isKakaoApiKeySet } f
 import { logger } from "../lib/logger";
 import axios from "axios";
 import { setNaverKeys } from "../lib/configStore";
+import { isAdminRequest } from "../lib/adminAuth";
 
 const router: IRouter = Router();
 router.post("/settings/naver-key", async (req, res): Promise<void> => {
@@ -15,7 +16,10 @@ router.post("/settings/naver-key", async (req, res): Promise<void> => {
 });
 
 // GET /api/settings — returns current config status (never exposes keys)
-router.get("/settings", (_req, res): void => {
+router.get("/settings", (req, res): void => {
+  // Public page data: configuration flags only. Build revision and key prefix
+  // are shown to the administrator alone.
+  const admin = isAdminRequest(req);
   const kakaoSet = isKakaoApiKeySet();
   const kakaoKey = getKakaoApiKey();
   res.json({
@@ -26,12 +30,12 @@ router.get("/settings", (_req, res): void => {
       trial: process.env.DEPLOYMENT_MODE === "free-trial",
       databaseExpiresAt: process.env.DATABASE_EXPIRES_AT || null,
       schedulerEnabled: process.env.RUN_SCHEDULER === "true",
-      revision: process.env.RENDER_GIT_COMMIT || null,
+      revision: admin ? process.env.RENDER_GIT_COMMIT || null : null,
     },
     crawlIntervalMinutes: Number(process.env.CRAWL_INTERVAL_MINUTES || 30),
     kakaoApiKey: {
       configured: kakaoSet,
-      masked: kakaoSet && kakaoKey ? `${kakaoKey.slice(0, 4)}${"*".repeat(Math.max(0, kakaoKey.length - 4))}` : null,
+      masked: admin && kakaoSet && kakaoKey ? `${kakaoKey.slice(0, 4)}${"*".repeat(Math.max(0, kakaoKey.length - 4))}` : null,
     },
   });
 });

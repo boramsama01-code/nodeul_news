@@ -3,7 +3,7 @@ import { Router, type IRouter } from "express";
 import { v4 as uuidv4 } from "uuid";
 import { db, crawlJobsTable } from "@workspace/db";
 import { eq, desc } from "drizzle-orm";
-import { validateDateRange } from "../lib/crawlRuntime";
+import { validateCrawlSpan } from "../lib/crawlRuntime";
 import {
   StartCrawlBody,
   StartBulkCrawlBody,
@@ -12,11 +12,12 @@ import {
 import { runCrawlJob } from "../lib/crawlOrchestrator";
 import { runBulkCrawlJob } from "../lib/bulkCrawlOrchestrator";
 import { logger } from "../lib/logger";
+import { isShuttingDown, startTrackedJob } from "../lib/lifecycle";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { readRelevanceReviews } from "../lib/relevanceReview";
 import { readState, usesDatabaseState } from "../lib/persistentState";
-import type { RssHealthItem } from "../lib/rssHealthAudit";
+import { summarizeSourceHealth, type RssHealthItem } from "../lib/rssHealthAudit";
 
 const router: IRouter = Router();
 router.get("/crawl/relevance", async (req, res) => {
@@ -38,11 +39,8 @@ router.get("/crawl/source-health", async (_req, res) => {
   try {
     if (usesDatabaseState()) {
       const report = await readState<{checkedAt:string;items:RssHealthItem[]}>("rss-health-audit-latest");
-      res.json({checkedAt:report?.checkedAt || null,sources:(report?.items || []).map(item => ({
-        name:item.name,domain:new URL(item.url).hostname,method:"rss_direct",endpoint:item.url,
-        status:item.status === "ok" ? "normal" : item.status === "empty" ? "partial" : "unsupported",
-        reason:item.error || (item.status === "ok" ? "official_feed_available" : "현재 피드에서 기사 항목을 확인하지 못함"),itemCount:item.itemCount,
-      }))});
+      // Support level comes from the feed loader, grouped per publisher.
+      res.json({checkedAt:report?.checkedAt || null,...summarizeSourceHealth(report?.items || [])});
       return;
     }
     const report = JSON.parse(await readFile(join(process.env.DATA_DIR || ".local", "source-audit.json"), "utf8"));
@@ -62,8 +60,9 @@ router.post("/crawl/start", async (req, res): Promise<void> => {
     return;
   }
 
+  if (isShuttingDown()) { res.status(503).json({ error: "서버가 재시작 중입니다. 잠시 후 다시 시도해 주세요." }); return; }
   const { startDate, endDate } = parsed.data;
-  try { validateDateRange(startDate, endDate); }
+  try { validateCrawlSpan(startDate, endDate, 31); }
   catch (err) { res.status(400).json({ error: String(err) }); return; }
   const jobId = uuidv4();
 
@@ -86,10 +85,10 @@ router.post("/crawl/start", async (req, res): Promise<void> => {
     return;
   }
 
-  // Fire and forget — do NOT await
-  runCrawlJob(jobId, startDate, endDate, {alternative:req.body.alternative===true, reviewOnly:req.body.reviewOnly===true}).catch((err) => {
+  // The job and its failure write are tracked together; shutdown waits for both.
+  void startTrackedJob(jobId, () => runCrawlJob(jobId, startDate, endDate, {alternative:req.body.alternative===true, reviewOnly:req.body.reviewOnly===true}), async (err) => {
     logger.error({ err, jobId }, "Crawl job crashed");
-    db.update(crawlJobsTable)
+    await db.update(crawlJobsTable)
       .set({ status: "error", error: String(err) })
       .where(eq(crawlJobsTable.id, jobId))
       .catch(() => {});
@@ -106,8 +105,9 @@ router.post("/crawl/bulk-start", async (req, res): Promise<void> => {
     return;
   }
 
+  if (isShuttingDown()) { res.status(503).json({ error: "서버가 재시작 중입니다. 잠시 후 다시 시도해 주세요." }); return; }
   const { startDate, endDate } = parsed.data;
-  try { validateDateRange(startDate, endDate); }
+  try { validateCrawlSpan(startDate, endDate, 400); }
   catch (err) { res.status(400).json({ error: String(err) }); return; }
   const jobId = uuidv4();
 
@@ -130,10 +130,9 @@ router.post("/crawl/bulk-start", async (req, res): Promise<void> => {
     return;
   }
 
-  // Fire and forget — do NOT await
-  runBulkCrawlJob(jobId, startDate, endDate).catch((err) => {
+  void startTrackedJob(jobId, () => runBulkCrawlJob(jobId, startDate, endDate), async (err) => {
     logger.error({ err, jobId }, "Bulk crawl job crashed");
-    db.update(crawlJobsTable)
+    await db.update(crawlJobsTable)
       .set({ status: "error", error: String(err) })
       .where(eq(crawlJobsTable.id, jobId))
       .catch(() => {});

@@ -3,6 +3,7 @@ import { Link, useLocation } from "wouter";
 import { LayoutDashboard, DownloadCloud, FileText, BarChart2, Menu, Newspaper, Settings, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet";
+import { AdminLoginDialog, AdminStatusButton } from "@/components/admin-login";
 
 interface LayoutProps {
   children: React.ReactNode;
@@ -68,9 +69,10 @@ export function Layout({ children }: LayoutProps) {
         <div className="flex-1 overflow-y-auto py-2">
           <NavLinks />
         </div>
-        <div className="px-4 py-4 border-t border-sidebar-border/60">
+        <div className="px-4 py-4 border-t border-sidebar-border/60 flex flex-col items-center gap-2">
+          <AdminStatusButton />
           <div className="text-[10px] text-sidebar-foreground/40 text-center">
-            독립 프로그램 · 자동 수집
+            조회는 누구나 · 변경은 관리자만
           </div>
         </div>
       </aside>
@@ -94,6 +96,7 @@ export function Layout({ children }: LayoutProps) {
             </SheetContent>
           </Sheet>
           <Logo />
+          <div className="ml-auto"><AdminStatusButton compact /></div>
         </header>
 
         {/* Main Content */}
@@ -102,6 +105,7 @@ export function Layout({ children }: LayoutProps) {
             {children}
           </div>
         </main>
+        <AdminLoginDialog />
       </div>
     </div>
   );

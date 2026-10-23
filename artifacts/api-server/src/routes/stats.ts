@@ -3,6 +3,7 @@ import { db, articlesTable } from "@workspace/db";
 import { sql, and, gte, lte, desc, isNull } from "drizzle-orm";
 import { GetMonthlyStatsQueryParams } from "@workspace/api-zod";
 import { relevantArticleCondition } from "../lib/articleRelevance";
+import { PRESS_NAME_SQL } from "../lib/queryParams";
 
 const router: IRouter = Router();
 
@@ -41,6 +42,7 @@ router.get("/stats/monthly", async (req, res): Promise<void> => {
     .select({
       month: sql<number>`EXTRACT(MONTH FROM (${articlesTable.publishedAt} ${sql.raw(KST)}))`,
       total: sql<number>`COUNT(*)`,
+      uniqueStoredUrls: sql<number>`COUNT(DISTINCT ${articlesTable.url})`,
       negative: sql<number>`COUNT(*) FILTER (WHERE ${articlesTable.isNegative} = true)`,
       selfPR: sql<number>`COUNT(*) FILTER (WHERE ${articlesTable.isSelfPR} = true)`,
     })
@@ -60,7 +62,7 @@ router.get("/stats/monthly", async (req, res): Promise<void> => {
       const total = Number(r?.total ?? 0);
       const negative = Number(r?.negative ?? 0);
       const selfPR = Number(r?.selfPR ?? 0);
-      return { month: m, total, negative, statistical: total - negative, selfPR };
+      return { month: m, total, uniqueStoredUrls: Number(r?.uniqueStoredUrls ?? 0), negative, statistical: total - negative, selfPR };
     });
 
     res.json(result);
@@ -72,7 +74,7 @@ router.get("/stats/monthly", async (req, res): Promise<void> => {
       const total = Number(r.total);
       const negative = Number(r.negative);
       const selfPR = Number(r.selfPR);
-      return { month: Number(r.month), total, negative, statistical: total - negative, selfPR };
+      return { month: Number(r.month), total, uniqueStoredUrls: Number(r.uniqueStoredUrls), negative, statistical: total - negative, selfPR };
     }),
   );
 });
@@ -111,6 +113,7 @@ router.get("/stats/summary", async (req, res): Promise<void> => {
     db
       .select({
         totalArticles: sql<number>`COUNT(*)`,
+        uniqueStoredUrls: sql<number>`COUNT(DISTINCT ${articlesTable.url})`,
         negativeCount: sql<number>`COUNT(*) FILTER (WHERE ${articlesTable.isNegative} = true)`,
         selfPRCount: sql<number>`COUNT(*) FILTER (WHERE ${articlesTable.isSelfPR} = true)`,
       })
@@ -128,7 +131,11 @@ router.get("/stats/summary", async (req, res): Promise<void> => {
   const totalAllTime = Number(allTimeRow?.totalAllTime ?? 0);
 
   res.json({
+    // totalArticles counts collection rows (one per route). uniqueStoredUrls
+    // counts distinct stored URLs only; a Google redirect URL and the original
+    // URL of the same story are still two. It is NOT a unique-article count.
     totalArticles,
+    uniqueStoredUrls: Number(row?.uniqueStoredUrls ?? 0),
     statisticalCount: totalArticles - negativeCount,
     selfPRCount,
     negativeCount,
@@ -148,16 +155,17 @@ router.get("/stats/top-media", async (req, res): Promise<void> => {
   }
   const where = conditions.length > 0 ? and(...conditions) : undefined;
 
+  const press = sql.raw(PRESS_NAME_SQL);
   const rows = await db
     .select({
-      mediaName: articlesTable.mediaName,
-      count: sql<number>`COUNT(*)`,
+      mediaName: sql<string>`${press}`,
+      count: sql<number>`COUNT(DISTINCT ${articlesTable.url})`,
     })
     .from(articlesTable)
     .where(where)
-    .groupBy(articlesTable.mediaName)
-    .orderBy(sql`COUNT(*) DESC`)
-    .limit(limit);
+    .groupBy(press)
+    .orderBy(sql`COUNT(DISTINCT ${articlesTable.url}) DESC`)
+    .limit(Number.isFinite(limit) && limit > 0 ? limit : 10);
 
   res.json(rows.map((r) => ({ mediaName: r.mediaName, count: Number(r.count) })));
 });

@@ -115,6 +115,7 @@ export async function createRelevanceReview(options: {
       if (record && !record.delivered) await save({...record, delivered: true});
     },
     summary: () => `관련 확인 ${counts.related}, 무관 확인 ${counts.unrelated}, 확인 대기 ${counts.pending} (대기는 원문 확인 후 재수집)`,
+    pendingCount: () => counts.pending,
     flush: () => flushPublisherCache(),
   };
 }

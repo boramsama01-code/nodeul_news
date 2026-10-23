@@ -80,7 +80,14 @@ export async function crawlSource(
   source: NewsSource,
   startDate: string,
   endDate: string,
-  dependencies: { loadFeed?: () => Promise<{items: OfficialFeedItem[]}> } = {},
+  dependencies: {
+    loadFeed?: () => Promise<{items: OfficialFeedItem[]}>;
+    // false: do not add a per-publisher Google query for this direct feed.
+    googleFallback?: boolean;
+    // Raw feed size before filtering, for the caller's request policy.
+    onFeed?: (info: { items: number }) => void;
+    onFailure?: () => void;
+  } = {},
 ): Promise<ArticleData[]> {
   validateDateRange(startDate, endDate);
   const start = kstStart(startDate);
@@ -96,6 +103,7 @@ export async function crawlSource(
       logger.info({source: source.name, status: official.status, reason: official.reason, items: feed.items.length, coverage: coverageForRange(official, startDate, endDate)}, "Official feed checked");
     }
 
+    dependencies.onFeed?.({ items: feed.items?.length || 0 });
     if(source.method==='google_news_rss' && (feed.items?.length||0)>=100 && startDate<endDate)warnSource(source.name,'검색 피드 100건 상한 가능성: 짧은 기간으로 재점검 필요');
     for (const item of feed.items || []) {
       try {
@@ -149,18 +157,25 @@ export async function crawlSource(
     }
     // A working latest-only feed cannot answer an older date-range query.
     // Search supplementation retains google_news_rss provenance.
-    if (official && (!feed.items.length || !official.oldestPublishedAt || start < new Date(official.oldestPublishedAt))) {
-      warnSource(source.name, "직접 피드의 보관 범위 밖 또는 피드 미지원: 구글뉴스 검색으로 기간을 보완합니다. 원문에 기사가 없다는 뜻은 아닙니다.");
+    if (official && (!feed.items.length || !official.oldestPublishedAt || start < new Date(official.oldestPublishedAt)) && dependencies.googleFallback === false) {
+      warnSource(source.name, "직접 피드의 보관 범위 밖: 구글뉴스 전체 검색이 상한 미만으로 응답해 언론사별 보완 검색은 생략했습니다.", "info");
+    } else if (official && (!feed.items.length || !official.oldestPublishedAt || start < new Date(official.oldestPublishedAt))) {
+      warnSource(source.name, "직접 피드의 보관 범위 밖 또는 피드 미지원: 구글뉴스 검색으로 기간을 보완합니다. 원문에 기사가 없다는 뜻은 아닙니다.", "info");
       const fallback = new URL("https://news.google.com/rss/search?hl=ko&gl=KR&ceid=KR:ko");
       fallback.searchParams.set("q", `(${GOOGLE_NEWS_QUERY}) site:${source.domain}`);
       results.push(...await crawlSource({ ...source, name: `${source.name} (구글 보완)`, method: "google_news_rss", url: fallback.toString() }, startDate, endDate));
     }
   } catch (err) {
+    dependencies.onFailure?.();
     if (err instanceof GoogleRssCircuitOpenError) return [];
     const msg = err instanceof Error ? err.message : String(err);
-    warnSource(source.name, msg);
-    if (source.method === "rss_direct") {
-      warnSource(source.name, "직접 RSS 실패: 구글뉴스의 해당 언론사 검색으로 보완합니다.");
+    // A direct feed failure is covered by the Google fallback below, which
+    // reports its own incompleteness. Google failures stay incomplete.
+    warnSource(source.name, msg, source.method === "rss_direct" ? "info" : "incomplete");
+    if (source.method === "rss_direct" && dependencies.googleFallback === false) {
+      warnSource(source.name, "직접 RSS 실패: 구글뉴스 전체 검색이 상한 미만으로 응답해 언론사별 보완 검색은 생략했습니다.", "info");
+    } else if (source.method === "rss_direct") {
+      warnSource(source.name, "직접 RSS 실패: 구글뉴스의 해당 언론사 검색으로 보완합니다.", "info");
       const fallback = new URL("https://news.google.com/rss/search?hl=ko&gl=KR&ceid=KR:ko");
       fallback.searchParams.set("q", `(${GOOGLE_NEWS_QUERY}) site:${source.domain}`);
       return crawlSource({ ...source, name: `${source.name} (구글 보완)`, method: "google_news_rss", url: fallback.toString() }, startDate, endDate);
@@ -314,7 +329,7 @@ export async function crawlNaverNews(
   const clientSecret = process.env.NAVER_CLIENT_SECRET;
 
   if (!clientId || !clientSecret) {
-    warnSource("네이버 API", "NAVER_CLIENT_ID / NAVER_CLIENT_SECRET 미설정");
+    warnSource("네이버 API", "NAVER_CLIENT_ID / NAVER_CLIENT_SECRET 미설정", "info");
     return [];
   }
 
@@ -626,13 +641,27 @@ function readNaverSearchPage(data: unknown): { html: string; nextUrl?: string; i
   return {html, isContinuation: false};
 }
 
+// The next-page address may carry the period as ds/de/pd=3, as an `nso`
+// token "p:fromYYYYMMDDtoYYYYMMDD", or both. Every period that is present must
+// equal the requested one and at least one must be present; anything else
+// (another period, "p:all", a different query or host) is refused.
+export function naverContinuationMatches(url: URL, query: string, ds: string, de: string): boolean {
+  if (url.protocol !== "https:" || url.hostname !== "s.search.naver.com" || url.port || url.username || url.password ||
+      !/^\/p\/newssearch\/\d+\/api\/tab\/more$/.test(url.pathname) || url.searchParams.get("query") !== query) return false;
+  const pd = url.searchParams.get("pd");
+  if (pd !== null && pd !== "3") return false;
+  const hasDsDe = url.searchParams.has("ds") || url.searchParams.has("de");
+  if (hasDsDe && (url.searchParams.get("ds") !== ds || url.searchParams.get("de") !== de)) return false;
+  const periodTokens = (url.searchParams.get("nso") || "").split(",").map((part) => part.trim()).filter((part) => part.startsWith("p:"));
+  const expected = `p:from${ds.replace(/\./g, "")}to${de.replace(/\./g, "")}`;
+  if (periodTokens.some((token) => token !== expected)) return false;
+  return (hasDsDe && pd === "3") || periodTokens.length > 0;
+}
+
 function validateNaverContinuationUrl(value: string | undefined, query: string, ds: string, de: string): string | undefined {
   if (!value) return undefined;
   const url = new URL(value);
-  if (url.protocol !== "https:" || url.hostname !== "s.search.naver.com" || url.port || url.username || url.password ||
-      !/^\/p\/newssearch\/\d+\/api\/tab\/more$/.test(url.pathname) ||
-      url.searchParams.get("query") !== query || url.searchParams.get("ds") !== ds || url.searchParams.get("de") !== de ||
-      url.searchParams.get("pd") !== "3") {
+  if (!naverContinuationMatches(url, query, ds, de)) {
     throw new Error("네이버 다음 페이지 주소가 요청한 검색어·기간과 일치하지 않아 중단했습니다.");
   }
   return url.toString();
@@ -674,11 +703,17 @@ export async function crawlNaverWebSearch(
         }));
 
         const page = readNaverSearchPage(resp.data);
-        continuationUrl = validateNaverContinuationUrl(page.nextUrl, query, ds, de);
         const html = page.html;
         const pageState=classifyProviderResponse(resp.status||200,html);
         if(['challenge','automated'].includes(pageState.kind))throw Object.assign(new Error(pageState.reason),{response:{status:resp.status||200,data:html}});
+        // Keep the page already received even when its next-page address is unusable.
         const articles = extractNaverWebArticles(html, startDate===endDate ? startDate : undefined);
+        let paginationChanged = false;
+        try { continuationUrl = validateNaverContinuationUrl(page.nextUrl, query, ds, de); }
+        catch {
+          continuationUrl = undefined; paginationChanged = true;
+          warnSource("네이버 웹", `${query} ${startDate}~${endDate}: 다음 페이지 주소 형식 변경으로 이후 결과 미확인`);
+        }
         if(articles.some(a=>a.coarseDate) && startDate<endDate){
           // At most one month (31 days), sequential and paced. Never turn "3 weeks ago" into a guessed date.
           const daily:ArticleData[]=[];
@@ -728,6 +763,10 @@ export async function crawlNaverWebSearch(
 
         if (start === 991 && articles.length >= 10) {
           warnSource("네이버 웹", `${query} ${startDate}~${endDate}: 100페이지 탐색 한도 도달 (일부 기사 누락 가능)`);
+        }
+        if (paginationChanged) {
+          await recordProviderHealth('naver_web',{status:'error',reason:'다음 페이지 주소 형식 변경(구조 변경 의심)',httpStatus:resp.status||200,checkedAt:new Date().toISOString()});
+          break;
         }
         if (page.isContinuation && !continuationUrl) break;
 

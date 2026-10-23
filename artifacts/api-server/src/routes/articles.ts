@@ -28,19 +28,21 @@ import { logger } from "../lib/logger";
 import ExcelJS from "exceljs";
 import { relevantArticleCondition } from "../lib/articleRelevance";
 import { isRelevant } from "../lib/newsRelevance";
+import { clampPageSize, normalizeListQuery } from "../lib/queryParams";
 
 const router: IRouter = Router();
 
 // GET /articles
 router.get("/articles", async (req, res): Promise<void> => {
-  const parsed = ListArticlesQueryParams.safeParse(req.query);
+  const parsed = ListArticlesQueryParams.safeParse(normalizeListQuery(req.query));
   if (!parsed.success) {
     res.status(400).json({ error: parsed.error.message });
     return;
   }
 
-  const { year, month, keyword, isNegative, isSelfPR, page = 1, limit = 20 } = parsed.data;
-  const offset = (page - 1) * limit;
+  const { year, month, keyword, isNegative, isSelfPR, page = 1 } = parsed.data;
+  const limit = clampPageSize(parsed.data.limit);
+  const offset = (Math.max(1, page) - 1) * limit;
 
   const conditions = [isNull(articlesTable.deletedAt), relevantArticleCondition()];
 
