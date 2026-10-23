@@ -1,0 +1,523 @@
+diff --git a/artifacts/api-server/src/lib/crawlerSources.ts b/artifacts/api-server/src/lib/crawlerSources.ts
+index d0628cb..31f7064 100644
+--- a/artifacts/api-server/src/lib/crawlerSources.ts
++++ b/artifacts/api-server/src/lib/crawlerSources.ts
+@@ -80,7 +80,14 @@ export async function crawlSource(
+   source: NewsSource,
+   startDate: string,
+   endDate: string,
+-  dependencies: { loadFeed?: () => Promise<{items: OfficialFeedItem[]}> } = {},
++  dependencies: {
++    loadFeed?: () => Promise<{items: OfficialFeedItem[]}>;
++    // false: do not add a per-publisher Google query for this direct feed.
++    googleFallback?: boolean;
++    // Raw feed size before filtering, for the caller's request policy.
++    onFeed?: (info: { items: number }) => void;
++    onFailure?: () => void;
++  } = {},
+ ): Promise<ArticleData[]> {
+   validateDateRange(startDate, endDate);
+   const start = kstStart(startDate);
+@@ -96,6 +103,7 @@ export async function crawlSource(
+       logger.info({source: source.name, status: official.status, reason: official.reason, items: feed.items.length, coverage: coverageForRange(official, startDate, endDate)}, "Official feed checked");
+     }
+ 
++    dependencies.onFeed?.({ items: feed.items?.length || 0 });
+     if(source.method==='google_news_rss' && (feed.items?.length||0)>=100 && startDate<endDate)warnSource(source.name,'검색 피드 100건 상한 가능성: 짧은 기간으로 재점검 필요');
+     for (const item of feed.items || []) {
+       try {
+@@ -149,18 +157,25 @@ export async function crawlSource(
+     }
+     // A working latest-only feed cannot answer an older date-range query.
+     // Search supplementation retains google_news_rss provenance.
+-    if (official && (!feed.items.length || !official.oldestPublishedAt || start < new Date(official.oldestPublishedAt))) {
+-      warnSource(source.name, "직접 피드의 보관 범위 밖 또는 피드 미지원: 구글뉴스 검색으로 기간을 보완합니다. 원문에 기사가 없다는 뜻은 아닙니다.");
++    if (official && (!feed.items.length || !official.oldestPublishedAt || start < new Date(official.oldestPublishedAt)) && dependencies.googleFallback === false) {
++      warnSource(source.name, "직접 피드의 보관 범위 밖: 구글뉴스 전체 검색이 상한 미만으로 응답해 언론사별 보완 검색은 생략했습니다.", "info");
++    } else if (official && (!feed.items.length || !official.oldestPublishedAt || start < new Date(official.oldestPublishedAt))) {
++      warnSource(source.name, "직접 피드의 보관 범위 밖 또는 피드 미지원: 구글뉴스 검색으로 기간을 보완합니다. 원문에 기사가 없다는 뜻은 아닙니다.", "info");
+       const fallback = new URL("https://news.google.com/rss/search?hl=ko&gl=KR&ceid=KR:ko");
+       fallback.searchParams.set("q", `(${GOOGLE_NEWS_QUERY}) site:${source.domain}`);
+       results.push(...await crawlSource({ ...source, name: `${source.name} (구글 보완)`, method: "google_news_rss", url: fallback.toString() }, startDate, endDate));
+     }
+   } catch (err) {
++    dependencies.onFailure?.();
+     if (err instanceof GoogleRssCircuitOpenError) return [];
+     const msg = err instanceof Error ? err.message : String(err);
+-    warnSource(source.name, msg);
+-    if (source.method === "rss_direct") {
+-      warnSource(source.name, "직접 RSS 실패: 구글뉴스의 해당 언론사 검색으로 보완합니다.");
++    // A direct feed failure is covered by the Google fallback below, which
++    // reports its own incompleteness. Google failures stay incomplete.
++    warnSource(source.name, msg, source.method === "rss_direct" ? "info" : "incomplete");
++    if (source.method === "rss_direct" && dependencies.googleFallback === false) {
++      warnSource(source.name, "직접 RSS 실패: 구글뉴스 전체 검색이 상한 미만으로 응답해 언론사별 보완 검색은 생략했습니다.", "info");
++    } else if (source.method === "rss_direct") {
++      warnSource(source.name, "직접 RSS 실패: 구글뉴스의 해당 언론사 검색으로 보완합니다.", "info");
+       const fallback = new URL("https://news.google.com/rss/search?hl=ko&gl=KR&ceid=KR:ko");
+       fallback.searchParams.set("q", `(${GOOGLE_NEWS_QUERY}) site:${source.domain}`);
+       return crawlSource({ ...source, name: `${source.name} (구글 보완)`, method: "google_news_rss", url: fallback.toString() }, startDate, endDate);
+@@ -314,7 +329,7 @@ export async function crawlNaverNews(
+   const clientSecret = process.env.NAVER_CLIENT_SECRET;
+ 
+   if (!clientId || !clientSecret) {
+-    warnSource("네이버 API", "NAVER_CLIENT_ID / NAVER_CLIENT_SECRET 미설정");
++    warnSource("네이버 API", "NAVER_CLIENT_ID / NAVER_CLIENT_SECRET 미설정", "info");
+     return [];
+   }
+ 
+@@ -626,13 +641,27 @@ function readNaverSearchPage(data: unknown): { html: string; nextUrl?: string; i
+   return {html, isContinuation: false};
+ }
+ 
++// The next-page address may carry the period as ds/de/pd=3, as an `nso`
++// token "p:fromYYYYMMDDtoYYYYMMDD", or both. Every period that is present must
++// equal the requested one and at least one must be present; anything else
++// (another period, "p:all", a different query or host) is refused.
++export function naverContinuationMatches(url: URL, query: string, ds: string, de: string): boolean {
++  if (url.protocol !== "https:" || url.hostname !== "s.search.naver.com" || url.port || url.username || url.password ||
++      !/^\/p\/newssearch\/\d+\/api\/tab\/more$/.test(url.pathname) || url.searchParams.get("query") !== query) return false;
++  const pd = url.searchParams.get("pd");
++  if (pd !== null && pd !== "3") return false;
++  const hasDsDe = url.searchParams.has("ds") || url.searchParams.has("de");
++  if (hasDsDe && (url.searchParams.get("ds") !== ds || url.searchParams.get("de") !== de)) return false;
++  const periodTokens = (url.searchParams.get("nso") || "").split(",").map((part) => part.trim()).filter((part) => part.startsWith("p:"));
++  const expected = `p:from${ds.replace(/\./g, "")}to${de.replace(/\./g, "")}`;
++  if (periodTokens.some((token) => token !== expected)) return false;
++  return (hasDsDe && pd === "3") || periodTokens.length > 0;
++}
++
+ function validateNaverContinuationUrl(value: string | undefined, query: string, ds: string, de: string): string | undefined {
+   if (!value) return undefined;
+   const url = new URL(value);
+-  if (url.protocol !== "https:" || url.hostname !== "s.search.naver.com" || url.port || url.username || url.password ||
+-      !/^\/p\/newssearch\/\d+\/api\/tab\/more$/.test(url.pathname) ||
+-      url.searchParams.get("query") !== query || url.searchParams.get("ds") !== ds || url.searchParams.get("de") !== de ||
+-      url.searchParams.get("pd") !== "3") {
++  if (!naverContinuationMatches(url, query, ds, de)) {
+     throw new Error("네이버 다음 페이지 주소가 요청한 검색어·기간과 일치하지 않아 중단했습니다.");
+   }
+   return url.toString();
+@@ -674,11 +703,17 @@ export async function crawlNaverWebSearch(
+         }));
+ 
+         const page = readNaverSearchPage(resp.data);
+-        continuationUrl = validateNaverContinuationUrl(page.nextUrl, query, ds, de);
+         const html = page.html;
+         const pageState=classifyProviderResponse(resp.status||200,html);
+         if(['challenge','automated'].includes(pageState.kind))throw Object.assign(new Error(pageState.reason),{response:{status:resp.status||200,data:html}});
++        // Keep the page already received even when its next-page address is unusable.
+         const articles = extractNaverWebArticles(html, startDate===endDate ? startDate : undefined);
++        let paginationChanged = false;
++        try { continuationUrl = validateNaverContinuationUrl(page.nextUrl, query, ds, de); }
++        catch {
++          continuationUrl = undefined; paginationChanged = true;
++          warnSource("네이버 웹", `${query} ${startDate}~${endDate}: 다음 페이지 주소 형식 변경으로 이후 결과 미확인`);
++        }
+         if(articles.some(a=>a.coarseDate) && startDate<endDate){
+           // At most one month (31 days), sequential and paced. Never turn "3 weeks ago" into a guessed date.
+           const daily:ArticleData[]=[];
+@@ -729,6 +764,10 @@ export async function crawlNaverWebSearch(
+         if (start === 991 && articles.length >= 10) {
+           warnSource("네이버 웹", `${query} ${startDate}~${endDate}: 100페이지 탐색 한도 도달 (일부 기사 누락 가능)`);
+         }
++        if (paginationChanged) {
++          await recordProviderHealth('naver_web',{status:'error',reason:'다음 페이지 주소 형식 변경(구조 변경 의심)',httpStatus:resp.status||200,checkedAt:new Date().toISOString()});
++          break;
++        }
+         if (page.isContinuation && !continuationUrl) break;
+ 
+         await new Promise((r) => setTimeout(r, 3000));
+diff --git a/artifacts/api-server/src/lib/existingArticles.ts b/artifacts/api-server/src/lib/existingArticles.ts
+index 6f7d0af..7ed4e59 100644
+--- a/artifacts/api-server/src/lib/existingArticles.ts
++++ b/artifacts/api-server/src/lib/existingArticles.ts
+@@ -3,6 +3,24 @@ import { and, eq, isNull } from "drizzle-orm";
+ import { addToSet, isDuplicate, isRelevant, type ArticleData } from "./crawlerUtils";
+ import { unidentifiedPublisher } from "./publisherMetrics";
+ 
++// Key for "the user deleted this article": scheme, "www.", host case, fragment,
++// trailing slash, tracking parameters and parameter order do not make a
++// different article. Paths and other parameters are kept as they are.
++export function trashKey(raw: string): string {
++  try {
++    const url = new URL(raw);
++    url.protocol = "https:";
++    url.hostname = url.hostname.toLowerCase().replace(/^www\./, "");
++    url.hash = "";
++    const kept = [...url.searchParams.entries()]
++      .filter(([key]) => !/^(?:utm_[a-z_]+|fbclid|gclid|igshid|mc_[a-z]+)$/i.test(key))
++      .sort(([left], [right]) => left.localeCompare(right));
++    url.search = new URLSearchParams(kept).toString();
++    if (url.pathname.length > 1) url.pathname = url.pathname.replace(/\/+$/, "");
++    return url.toString();
++  } catch { return raw.trim(); }
++}
++
+ // Exact source+URL matches survive publisher-name corrections. Deleted rows
+ // remain duplicates, so a scheduled collection cannot undo a user's deletion.
+ export async function loadExistingArticles(database: typeof db) {
+@@ -13,6 +31,8 @@ export async function loadExistingArticles(database: typeof db) {
+   }).from(articlesTable);
+   const active = new Set<string>();
+   const trash = new Set<string>();
++  // A user's deletion applies to the original article, whichever route finds it again.
++  const trashedUrls = new Set(rows.filter(row => row.deletedAt).map(row => trashKey(row.url)));
+   const exact = new Map(rows.map(row => [JSON.stringify([row.source, row.url]), row]));
+   for (const row of rows) addToSet(row.url, row.title, row.publishedAt,
+     row.deletedAt ? trash : active, row.source, row.mediaName);
+@@ -54,6 +74,7 @@ export async function loadExistingArticles(database: typeof db) {
+         }
+         return true;
+       }
++      if (trashedUrls.has(trashKey(article.url)) || trashedUrls.has(trashKey(collectedUrl))) { trashDuplicates++; return true; }
+       if (isDuplicate(article.url, article.title, article.publishedAt, active, article.source, article.mediaName)) return true;
+       if (isDuplicate(article.url, article.title, article.publishedAt, trash, article.source, article.mediaName)) {
+         trashDuplicates++; return true;
+diff --git a/artifacts/api-server/src/lib/pacedSources.ts b/artifacts/api-server/src/lib/pacedSources.ts
+index 5ccbb63..b6e29e1 100644
+--- a/artifacts/api-server/src/lib/pacedSources.ts
++++ b/artifacts/api-server/src/lib/pacedSources.ts
+@@ -36,15 +36,25 @@ async function crawlSourceBatch(
+   startDate: string,
+   endDate: string,
+   concurrency = 2,
++  googleFallback = true,
+ ): Promise<ArticleData[]> {
+   const groups = await mapInPacedBatches(
+     sources,
+-    (source) => crawlSource(source, startDate, endDate),
++    (source) => crawlSource(source, startDate, endDate, { googleFallback }),
+     { batchSize: 4, concurrency, pauseMinMs: 1700, pauseMaxMs: 3200 },
+   );
+   return groups.flat();
+ }
+ 
++// Publisher-scoped Google queries use the same keywords as the global query
++// plus "site:", so they can only add results when the global query hit the
++// feed's 100-item cap. "auto" (default) sends them only then; "always" keeps
++// the previous behaviour; "off" never sends them.
++export function scopedGoogleMode(): "auto" | "always" | "off" {
++  const value = (process.env.GOOGLE_SCOPED_SEARCH || "auto").toLowerCase();
++  return value === "always" || value === "off" ? value : "auto";
++}
++
+ export async function crawlAllSourcesPaced(startDate: string, endDate: string): Promise<ArticleData[]> {
+   validateDateRange(startDate, endDate);
+   const all = uniqueSources(NEWS_SOURCES);
+@@ -53,16 +63,25 @@ export async function crawlAllSourcesPaced(startDate: string, endDate: string):
+   const publisherGoogle = all.filter((source) => source.method === "google_news_rss" && source !== globalGoogle);
+   const historical = isHistorical(endDate);
+   const results: ArticleData[] = [];
++  let globalSaturated = false;
++  let globalChecked = false;
+ 
+   if (globalGoogle) {
+     results.push(...await crawlDateChunks(
+       "구글뉴스 통합검색",
+-      (start, end) => crawlSource(globalGoogle, start, end),
++      (start, end) => crawlSource(globalGoogle, start, end, {
++        onFeed: ({ items }) => { globalChecked = true; if (items >= 100) globalSaturated = true; },
++      }),
+       startDate,
+       endDate,
+       { days: 7, pauseMinMs: 1900, pauseMaxMs: 3400 },
+     ));
+   }
++  const mode = scopedGoogleMode();
++  // Unchecked (global failed) does not unlock 150+ extra Google requests: the
++  // failure is already reported as incomplete and more requests would only
++  // deepen the block.
++  const scopedAllowed = mode === "always" || (mode === "auto" && globalChecked && globalSaturated);
+ 
+   if (historical) {
+     logger.info(
+@@ -70,10 +89,13 @@ export async function crawlAllSourcesPaced(startDate: string, endDate: string):
+       "Historical interval: direct RSS is checked once by the health audit instead of being re-fetched for each old period",
+     );
+   } else {
+-    results.push(...await crawlSourceBatch(direct, startDate, endDate, 2));
++    results.push(...await crawlSourceBatch(direct, startDate, endDate, 2, scopedAllowed));
+   }
+ 
+-  const includePublisherSearches = !historical || process.env.DEEP_ARCHIVE_GOOGLE_SOURCES === "true";
++  const includePublisherSearches = (!historical || process.env.DEEP_ARCHIVE_GOOGLE_SOURCES === "true") && scopedAllowed;
++  if (!scopedAllowed && publisherGoogle.length > 0) {
++    logger.info({ mode, globalChecked, globalSaturated, skipped: publisherGoogle.length }, "Publisher-scoped Google searches skipped by request policy");
++  }
+   if (includePublisherSearches && publisherGoogle.length > 0) {
+     logger.info({ count: publisherGoogle.length, startDate, endDate }, "Publisher-scoped Google search sweep started");
+     results.push(...await crawlSourceBatch(publisherGoogle, startDate, endDate, 1));
+diff --git a/artifacts/api-server/src/lib/publisherBackfill.ts b/artifacts/api-server/src/lib/publisherBackfill.ts
+index 1327a56..ff99040 100644
+--- a/artifacts/api-server/src/lib/publisherBackfill.ts
++++ b/artifacts/api-server/src/lib/publisherBackfill.ts
+@@ -102,7 +102,8 @@ export function isUnknownPublisher(mediaName: string): boolean {
+ }
+ 
+ export function formatResolvedMediaName(existing: string, publisher: string): string {
+-  const parenthesized = existing.match(/^(.+?)\((?:기타|알수없음|알 수 없음)\)$/);
++  if (/^구글뉴스-/.test(existing)) return `구글뉴스(${publisher})`;
++  const parenthesized = existing.match(/^(.+?)\((?:기타|알수없음|알 수 없음|최신|관련순|[a-z\d.-]+\.[a-z]{2,})\)$/i);
+   if (parenthesized) return `${parenthesized[1]}(${publisher})`;
+   if (/^네이버(뉴스)?$/i.test(existing)) return `네이버(${publisher})`;
+   if (/^다음(뉴스)?$/i.test(existing)) return `다음뉴스(${publisher})`;
+@@ -141,8 +142,11 @@ export async function backfillUnknownPublishers(
+       `SELECT id,url,media_name FROM articles
+        WHERE id > $1 AND deleted_at IS NULL
+          AND published_at >= $2::date AND published_at < ($3::date + interval '1 day')
+-         AND (media_name IN ('기타','알수없음','알 수 없음','네이버뉴스','다음뉴스','구글뉴스')
+-              OR media_name LIKE '%(기타)' OR media_name LIKE '%(알수없음)' OR media_name LIKE '%(알 수 없음)')
++         AND (media_name IN ('기타','알수없음','알 수 없음','네이버뉴스','다음뉴스','구글뉴스','Daum','NAVER')
++              OR media_name ~ '\\((기타|알수없음|알 수 없음|최신|관련순)\\)$'
++              OR media_name LIKE '구글뉴스-%'
++              -- the same rule as unidentifiedPublisher(): a bare host name is not a publisher
++              OR media_name ~* '^([^()]*\\()?[a-z0-9-]+(\\.[a-z0-9-]+)+\\)?$')
+        ORDER BY id LIMIT $4`,
+       [lastId, startDate, endDate, Math.min(batchSize, maxRows - scanned)],
+     );
+diff --git a/artifacts/api-server/src/lib/publisherResolver.ts b/artifacts/api-server/src/lib/publisherResolver.ts
+index f6c5d4f..550245c 100644
+--- a/artifacts/api-server/src/lib/publisherResolver.ts
++++ b/artifacts/api-server/src/lib/publisherResolver.ts
+@@ -10,6 +10,7 @@ import { dirname, join } from "node:path";
+ import iconv from "iconv-lite";
+ import { extractArticleText } from "./articleText";
+ import { classifyProviderResponse, readProviderHealth } from "./providerHealth";
++import { isShuttingDown } from "./lifecycle";
+ import { readState, writeState, usesDatabaseState } from "./persistentState";
+ import { ArticleData, cleanPublisherName, extractPressName, isPortalUrl, resolveMediaNameStrict, resolvePublisherHint } from "./crawlerUtils";
+ 
+@@ -123,11 +124,18 @@ async function fetchPage(url: URL, addresses: Address[], signal: AbortSignal, ma
+ export interface PageIdentity { publisher: string | null; evidence: string[]; aliasEligible: boolean; nextUrl?: string; nextEvidence?: string }
+ export function inspectPublisherPage(html: string, pageUrl: string): PageIdentity {
+   const $ = cheerio.load(html);
+-  const signals: { name: string; evidence: string }[] = [];
++  // Lower rank wins: portal press label, the article's own publisher,
++  // og:site_name, other publisher meta, then page- and site-level publishers.
++  // A WebSite/WebPage publisher is often a parent group, not the newsroom.
++  const RANK: Record<string, number> = {
++    "portal:press-logo": 0, "portal:press-name": 0, "schema.org:article-publisher": 1, "meta:og:site_name": 2,
++    "meta:publisher": 3, "meta:dc.publisher": 3, "meta:dcterms.publisher": 3, "schema.org:page-publisher": 4, "schema.org:site-publisher": 5,
++  };
++  const signals: { name: string; evidence: string; rank: number }[] = [];
+   const add = (name: unknown, evidence: string) => {
+     if (typeof name !== "string") return;
+     const cleaned = cleanPublisherName(name);
+-    if (cleaned) signals.push({ name: cleaned, evidence });
++    if (cleaned) signals.push({ name: cleaned, evidence, rank: RANK[evidence] ?? 9 });
+   };
+   const objects: Record<string, unknown>[] = [];
+   const visit = (value: unknown, depth = 0): void => {
+@@ -149,7 +157,10 @@ export function inspectPublisherPage(html: string, pageUrl: string): PageIdentit
+   };
+   for (const object of objects) {
+     const types = Array.isArray(object["@type"]) ? object["@type"] : [object["@type"]];
+-    if (types.some(type => typeof type === "string" && /(?:Article|WebPage|WebSite)$/.test(type))) add(publisherName(object.publisher), "schema.org:publisher");
++    const level = types.some(type => typeof type === "string" && /Article$/.test(type)) ? "article"
++      : types.some(type => typeof type === "string" && /WebPage$/.test(type)) ? "page"
++      : types.some(type => typeof type === "string" && /WebSite$/.test(type)) ? "site" : null;
++    if (level) add(publisherName(object.publisher), `schema.org:${level}-publisher`);
+   }
+   $("meta").each((_i, element) => {
+     const key = ($(element).attr("property") || $(element).attr("name") || "").toLowerCase();
+@@ -159,12 +170,16 @@ export function inspectPublisherPage(html: string, pageUrl: string): PageIdentit
+     $(".media_end_head_top_logo img[alt], .press_logo img[alt], .link_cp img[alt], #kakaoServiceLogo img[alt]").each((_i, element) => add($(element).attr("alt"), "portal:press-logo"));
+     $(".cp_name, .head_view .tit_cp").each((_i, element) => add($(element).text(), "portal:press-name"));
+   }
++  signals.sort((left, right) => left.rank - right.rank);
+   const publisher = signals[0]?.name || null;
+   const evidence = signals.filter(item => item.name === publisher).map(item => item.evidence);
+-  // Learn only exact hosts, and only when schema and page metadata agree.
++  const conflicting = signals.some(item => item.name !== publisher && item.rank <= 3);
++  if (conflicting) evidence.push("publisher-signals-disagree");
++  // Learn only exact hosts, and only when the ARTICLE's publisher and the page
++  // metadata agree and no other strong signal names someone else.
+   // Shared blogging platforms never acquire a host-wide publisher identity.
+   const host = new URL(pageUrl).hostname;
+-  const aliasEligible = !isPortalUrl(pageUrl) && !/(?:^|\.)(?:tistory\.com|wordpress\.com|blogspot\.com|medium\.com)$/i.test(host) && evidence.includes("schema.org:publisher") && evidence.some(item => item.startsWith("meta:"));
++  const aliasEligible = !isPortalUrl(pageUrl) && !/(?:^|\.)(?:tistory\.com|wordpress\.com|blogspot\.com|medium\.com)$/i.test(host) && !conflicting && evidence.includes("schema.org:article-publisher") && evidence.some(item => item.startsWith("meta:"));
+   const result: PageIdentity = { publisher, evidence: [...new Set(evidence)], aliasEligible };
+   const candidate = (raw: string | undefined, evidenceName: string): boolean => {
+     if (!raw) return false;
+@@ -327,6 +342,7 @@ export function createPublisherResolver(options: ResolverOptions = {}) {
+     flushTimer.unref();
+   }
+   async function requestPage(url: URL, budget: Budget): Promise<PageResponse> {
++    if (isShuttingDown()) throw new Error("shutting-down");
+     if ((blockedHosts.get(url.hostname) || 0) > now()) throw new Error("host-cooldown");
+     if (url.hostname === "news.google.com") {
+       const state = (await readProviderHealth()).google_news;
+@@ -464,11 +480,25 @@ export function createPublisherResolver(options: ResolverOptions = {}) {
+     await ensureCacheLoaded();
+     const rawFallback = extractPressName(fallbackName || "");
+     const fallback = resolvePublisherHint(rawFallback) || null;
++    // Precedence: domain map > portal press label (네이버/다음) > page metadata
++    // (ranked in inspectPublisherPage) and learned host aliases > other
++    // collection labels such as an RSS <source>.
++    const portalLabel = /^(?:네이버(?:뉴스)?|다음(?:뉴스)?)\(/.test(fallbackName || "");
+     const decorate = (value: ArticleIdentity): ArticleIdentity => {
+-      const publisher = cleanPublisherName(value.publisher || "") || null;
+-      return publisher || !fallback || value.status === "blocked"
+-        ? { ...value, publisher, evidence: [...value.evidence] }
+-        : { ...value, publisher: fallback, evidence: [...value.evidence, "collection:publisher-label"], status: "partial" };
++      const page = cleanPublisherName(value.publisher || "") || null;
++      if (value.status === "blocked") return { ...value, publisher: page, evidence: [...value.evidence] };
++      const mappedOriginal = value.originalUrl ? resolveMediaNameStrict(value.originalUrl) : "";
++      if (mappedOriginal) return { ...value, publisher: mappedOriginal, evidence: value.evidence.includes("domain-map") ? [...value.evidence] : [...value.evidence, "domain-map"], status: "resolved" };
++      if (fallback && portalLabel) {
++        const agrees = page === fallback;
++        return { ...value, publisher: fallback,
++          evidence: [...value.evidence, "portal:publisher-label", ...(page && !agrees ? [`page-publisher-differs:${page}`] : [])],
++          status: agrees ? value.status : "partial" };
++      }
++      if (page) return { ...value, publisher: page, evidence: [...value.evidence] };
++      return fallback
++        ? { ...value, publisher: fallback, evidence: [...value.evidence, "collection:publisher-label"], status: "partial" }
++        : { ...value, publisher: null, evidence: [...value.evidence] };
+     };
+     let url: string;
+     try { url = normalizedUrl(input); } catch { return { originalUrl: input, publisher: null, evidence: ["blocked:unsafe-url"], status: "blocked" }; }
+@@ -478,7 +508,7 @@ export function createPublisherResolver(options: ResolverOptions = {}) {
+     const cached = entries.get(url);
+     if (cached && cached.expiresAt > now()) return decorate(cached.value);
+     const alias = aliases.get(new URL(url).hostname);
+-    if (alias && alias.expiresAt > now()) return { originalUrl: url, publisher: alias.publisher, evidence: ["verified-host-cache"], status: "resolved" };
++    if (alias && alias.expiresAt > now()) return decorate({ originalUrl: url, publisher: alias.publisher, evidence: ["verified-host-cache"], status: "resolved" });
+     if (!isPortalUrl(url) && fallback) return decorate({ originalUrl: url, publisher: null, evidence: [], status: "partial" });
+     if (controls.network === false || controls.maxRequests === 0 || controls.budget?.remaining === 0) return decorate({ originalUrl: url, publisher: null, evidence: ["network-skipped"], status: "unresolved" });
+     const existing = pending.get(url);
+diff --git a/artifacts/api-server/src/lib/queryParams.ts b/artifacts/api-server/src/lib/queryParams.ts
+new file mode 100644
+index 0000000..189e83b
+--- /dev/null
++++ b/artifacts/api-server/src/lib/queryParams.ts
+@@ -0,0 +1,21 @@
++// Query strings carry text. zod's coerce.boolean() turns "false" into true,
++// so boolean filters are decided here before validation.
++export function strictBoolean(value: unknown): boolean | undefined {
++  if (value === true || value === "true") return true;
++  if (value === false || value === "false") return false;
++  return undefined;
++}
++
++export const MAX_PAGE_SIZE = 200;
++
++export function normalizeListQuery(query: Record<string, unknown>): Record<string, unknown> {
++  return { ...query, isNegative: strictBoolean(query.isNegative), isSelfPR: strictBoolean(query.isSelfPR) };
++}
++
++export function clampPageSize(limit: number | undefined, fallback = 20): number {
++  const value = Number.isFinite(limit) ? Math.floor(limit as number) : fallback;
++  return Math.min(Math.max(1, value), MAX_PAGE_SIZE);
++}
++
++// "네이버(연합뉴스)", "다음뉴스(연합뉴스)", "연합뉴스" → "연합뉴스" for counting.
++export const PRESS_NAME_SQL = `regexp_replace(media_name, '^(?:네이버뉴스|네이버|다음뉴스|구글뉴스)\\((.+)\\)$', '\\1')`;
+diff --git a/artifacts/api-server/src/lib/relevanceReview.ts b/artifacts/api-server/src/lib/relevanceReview.ts
+index a0bea21..fac4015 100644
+--- a/artifacts/api-server/src/lib/relevanceReview.ts
++++ b/artifacts/api-server/src/lib/relevanceReview.ts
+@@ -115,6 +115,7 @@ export async function createRelevanceReview(options: {
+       if (record && !record.delivered) await save({...record, delivered: true});
+     },
+     summary: () => `관련 확인 ${counts.related}, 무관 확인 ${counts.unrelated}, 확인 대기 ${counts.pending} (대기는 원문 확인 후 재수집)`,
++    pendingCount: () => counts.pending,
+     flush: () => flushPublisherCache(),
+   };
+ }
+diff --git a/artifacts/api-server/src/lib/rssHealthAudit.ts b/artifacts/api-server/src/lib/rssHealthAudit.ts
+index 8a9dbe7..7c3b8c0 100644
+--- a/artifacts/api-server/src/lib/rssHealthAudit.ts
++++ b/artifacts/api-server/src/lib/rssHealthAudit.ts
+@@ -12,6 +12,7 @@ export interface RssHealthItem {
+   discovered?: boolean;
+   status: "ok" | "empty" | "error";
+   support?: OfficialFeedResult["status"];
++  kind?: OfficialFeedResult["kind"];
+   reason?: string;
+   requestCount?: number;
+   itemCount: number;
+@@ -56,6 +57,7 @@ function toHealthItem(source: NewsSource, result: OfficialFeedResult): RssHealth
+     discovered,
+     status,
+     support: result.status,
++    kind: result.kind,
+     reason: result.reason,
+     requestCount: result.requestCount,
+     itemCount,
+@@ -65,6 +67,74 @@ function toHealthItem(source: NewsSource, result: OfficialFeedResult): RssHealth
+   };
+ }
+ 
++export type SupportLevel = "normal" | "partial" | "unsupported";
++
++export interface PublisherSourceHealth {
++  name: string;
++  domain: string;
++  method: "rss_direct";
++  status: SupportLevel;
++  reason: string;
++  endpoint?: string;
++  scope: "whole" | "section";
++  feedCount: number;
++  usableFeeds: number;
++  itemCount: number;
++  newest?: string;
++  oldest?: string;
++  feeds: { endpoint: string; kind?: string | null; status: SupportLevel; reason: string; itemCount: number; newest?: string; oldest?: string }[];
++}
++
++// The loader's own support level decides the label. "Items present" is not the
++// same as "normal": a news sitemap only lists recent articles, a repaired feed
++// may be incomplete. Reports written before `support` existed are shown as
++// partial at best, never as normal.
++export function feedSupportLevel(item: RssHealthItem): SupportLevel {
++  if (item.support === "normal" && item.itemCount > 0) return "normal";
++  if (item.support === "partial" || (item.support === "normal" && item.itemCount === 0)) return "partial";
++  if (item.support === "unsupported") return "unsupported";
++  return item.status === "ok" ? "partial" : "unsupported";
++}
++
++function feedReason(item: RssHealthItem, level: SupportLevel): string {
++  if (item.reason) return item.reason;
++  if (!item.support) return level === "partial" ? "legacy_report_without_support_level" : item.error || "no_usable_official_feed";
++  return item.error || "no_usable_official_feed";
++}
++
++// One row per publisher. Several section feeds of one paper are one source,
++// not several "normal" sources.
++export function summarizeSourceHealth(items: RssHealthItem[]): { summary: Record<SupportLevel, number> & { publishers: number; feeds: number }; sources: PublisherSourceHealth[] } {
++  const groups = new Map<string, RssHealthItem[]>();
++  for (const item of items) groups.set(item.name, [...(groups.get(item.name) ?? []), item]);
++  const sources = [...groups.entries()].map(([name, group]): PublisherSourceHealth => {
++    const feeds = group.map((item) => {
++      const status = feedSupportLevel(item);
++      return { endpoint: item.resolvedUrl || item.url, kind: item.kind, status, reason: feedReason(item, status), itemCount: item.itemCount, newest: item.newest, oldest: item.oldest };
++    });
++    const usable = feeds.filter((feed) => feed.status !== "unsupported");
++    const scope = group.length > 1 ? "section" : "whole";
++    const status: SupportLevel = usable.length === 0 ? "unsupported"
++      : usable.length === feeds.length && feeds.every((feed) => feed.status === "normal") ? "normal" : "partial";
++    const reason = status === "unsupported" ? feeds[0].reason
++      : scope === "section" ? `section_feeds:${usable.length}/${feeds.length}`
++      : feeds[0].reason;
++    const dates = (key: "newest" | "oldest") => usable.map((feed) => feed[key]).filter((value): value is string => !!value).sort();
++    let domain = "";
++    try { domain = new URL(group[0].url).hostname; } catch { domain = ""; }
++    return {
++      name, domain, method: "rss_direct", status, reason, scope,
++      endpoint: (usable[0] ?? feeds[0]).endpoint,
++      feedCount: feeds.length, usableFeeds: usable.length,
++      itemCount: usable.reduce((sum, feed) => sum + feed.itemCount, 0),
++      newest: dates("newest").at(-1), oldest: dates("oldest")[0],
++      feeds,
++    };
++  });
++  const count = (level: SupportLevel) => sources.filter((source) => source.status === level).length;
++  return { summary: { publishers: sources.length, feeds: items.length, normal: count("normal"), partial: count("partial"), unsupported: count("unsupported") }, sources };
++}
++
+ export async function auditDirectRssFeeds(): Promise<{
+   checkedAt: string;
+   ok: number;
