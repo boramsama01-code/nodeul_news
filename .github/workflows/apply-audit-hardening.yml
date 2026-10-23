@@ -4,7 +4,7 @@ on:
   push:
     branches: ["fix/audit-hardening-2026-10-23"]
     paths:
-      - ".github/audit-hardening.patch"
+      - ".github/audit-hardening*.patch"
       - ".github/workflows/apply-audit-hardening.yml"
 
 permissions:
@@ -13,7 +13,7 @@ permissions:
 jobs:
   apply-test-commit:
     runs-on: ubuntu-latest
-    timeout-minutes: 35
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
         with:
@@ -28,10 +28,14 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
-      - name: Apply requested patch
-        run: git apply --index --whitespace=fix .github/audit-hardening.patch
+      - name: Apply requested patches
+        run: |
+          set -euo pipefail
+          for patch in .github/audit-hardening.patch .github/audit-hardening-02.patch .github/audit-hardening-03.patch .github/audit-hardening-04.patch; do
+            git apply --index --whitespace=fix "$patch"
+          done
       - name: Remove one-shot files
-        run: git rm .github/audit-hardening.patch .github/workflows/apply-audit-hardening.yml
+        run: git rm .github/audit-hardening.patch .github/audit-hardening-02.patch .github/audit-hardening-03.patch .github/audit-hardening-04.patch .github/workflows/apply-audit-hardening.yml
       - run: pnpm install --frozen-lockfile
       - run: pnpm typecheck
       - run: pnpm test
