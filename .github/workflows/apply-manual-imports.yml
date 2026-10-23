@@ -31,8 +31,8 @@ jobs:
       - name: Apply staged patches
         run: |
           set -euo pipefail
-          git apply --index --whitespace=fix .github/manual-imports-backend.patch
-          git apply --index --whitespace=fix .github/manual-imports-web.patch
+          git apply --index --recount --whitespace=fix .github/manual-imports-backend.patch
+          git apply --index --recount --whitespace=fix .github/manual-imports-web.patch
       - name: Remove one-shot files
         run: git rm .github/manual-imports-backend.patch .github/manual-imports-web.patch .github/workflows/apply-manual-imports.yml
       - run: pnpm install --frozen-lockfile
